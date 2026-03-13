@@ -1,0 +1,17 @@
+[project]
+name = "gds-course-materials"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "chiricoca",
+    "dask>=2026.1.2",
+    "gensim>=4.4.0",
+    "ipykernel>=7.2.0",
+    "numba>=0.64.0",
+    "pyarrow>=23.0.1",
+]
+
+[tool.uv.sources]
+chiricoca = { git = "https://github.com/PLUMAS-research/chiricoca.git" }

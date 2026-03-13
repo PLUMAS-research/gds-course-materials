@@ -1,0 +1,7 @@
+__pycache__/
+.vscode/
+imgui.ini
+.DS_Store
+.venv/
+data/
+__pycache__
