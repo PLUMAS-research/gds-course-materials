@@ -26,13 +26,15 @@ from gdsutils.censo2024 import reassign
 
 # %%
 df = dd.read_parquet(
-    "data/censo2024-microdatos/personas",
+    Path("data") / "censo2024-microdatos" / "personas",
     filters=[[("region", "==", 13)]],
 )
 
 # %%
 carto = gpd.read_parquet(
-    "data/censo2024-cartografia/Cartografia_censo2024_Pais_Comunal.parquet"
+    Path("data")
+    / "censo2024-cartografia"
+    / "Cartografia_censo2024_Pais_Comunal.parquet"
 )
 
 # %%
@@ -44,7 +46,9 @@ carto.head()
 # %%
 manzanas_rm = (
     gpd.read_parquet(
-        "data/censo2024-cartografia/Cartografia_censo2024_Pais_Manzanas.parquet",
+        Path("data")
+        / "censo2024-cartografia"
+        / "Cartografia_censo2024_Pais_Manzanas.parquet",
         filters=[("COD_REGION", "=", 13)],
     )
     .assign(
