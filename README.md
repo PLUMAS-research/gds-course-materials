@@ -12,3 +12,4 @@ La carpeta `gdsutils` contiene funciones utilitarias para trabajar con los datos
 ## Clases
 
 * `01-carga-datos-geograficos.py`: cómo cargar datos con `geopandas` en formato Parquet. Ejemplo con datos del Censo 2024 de Chile a nivel de comunas y manzanas.
+* `02-geografía-y-espacialidad.py`: ver las diferencias de proporciones para el mapa de Chile de acuerdo a la proyección, cómo crear un mapa de burbujas para Santiago con el censo, ver la red de vecindad comunal.
