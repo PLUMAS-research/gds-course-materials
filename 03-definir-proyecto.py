@@ -7,11 +7,34 @@
 # Situación: Las personas usan transporte público en la ciudad.
 # Complicación: Las intervenciones que cambian las rutas de transporte público tienen efectos que no se cuantifican.
 # Propuesta: Medir el efecto de una intervención que alteró la red de transporte público (Paseo Bandera).
+#
 # %%
 
+import os
 from pathlib import Path
 
+import dask
 import dask.dataframe as dd
+
+# Configuramos dask para que pueda trabajar con datos DTPM
+# Evita que NumPy/Pandas usen todos los cores por su cuenta
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+dask.config.set(
+    {
+        # Gestión de Memoria (Relativa al sistema)
+        "distributed.worker.memory.target": 0.60,  # Comienza a volcar a disco (spill)
+        "distributed.worker.memory.spill": 0.70,  # Presiona el volcado a disco
+        "distributed.worker.memory.pause": 0.80,  # Pausa la ejecución de nuevas tareas
+        "distributed.worker.memory.terminate": 0.95,  # Reinicia el worker si llega aquí
+        "distributed.worker.nthreads": 4,  # Hilos por cada proceso worker
+        "distributed.worker.nprocs": None,  # 'None' deja que Dask decida procesos según el sistema
+    }
+)
+
+# %%
 
 from gdsutils.dtpm import (
     DIR_CONSOLIDADO,
@@ -23,38 +46,34 @@ from gdsutils.dtpm import (
     procesar_viajes,
 )
 
-# %%
+ANIOS = list(range(2014, 2026))
 
 for anio, urls in MAPEO_DTPM.items():
+    if (DIR_CONSOLIDADO / f"dtpm-{anio}.parquet").exists():
+        continue
     try:
         descargar_viajes(anio, urls)
     except Exception as e:
-        print(f"ERROR CRÍTICO en año {anio}: {e}")
-
-# %%
+        print(f"ERROR DE DESCARGA en año {anio}: {e}")
 
 for anio, urls in MAPEO_DTPM.items():
+    if (DIR_CONSOLIDADO / f"dtpm-{anio}.parquet").exists():
+        continue
     try:
         procesar_viajes(anio, urls)
     except Exception as e:
-        print(f"ERROR CRÍTICO en año {anio}: {e}")
-
-# %%
+        print(f"ERROR DE PROCESAMIENTO en año {anio}: {e}")
 
 procesar_paraderos()
 
-# %%
-
-for anio in range(2014, 2026):
+for anio in ANIOS:
     try:
         consolidar_anio(anio)
     except Exception as e:
-        print(f"ERROR en {anio}: {e}")
-
-print("CONSOLIDACIÓN FINALIZADA.")
+        print(f"ERROR DE CONSOLIDACIÓN en {anio}: {e}")
 
 # %%
-# Análisis exploratorio básico de los datos de viajes DTPM
+# Análisis básico de los datos de viajes DTPM
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -64,9 +83,8 @@ from chiricoca.maps import bubble_map
 
 setup_style(dpi=96)
 
-ANIOS = list(range(2014, 2026))
 PROPOSITOS_VALIDOS = ["TRABAJO", "ESTUDIO", "HOGAR", "OTROS"]
-ANIO_MAPA = 2025
+ANIO_MAPA = ANIOS[-1]
 
 # %%
 # Cómputo de agregados por año
@@ -134,6 +152,7 @@ for anio in ANIOS:
         df_manana = df[
             (df["hora_inicio"] >= 6)
             & (df["hora_inicio"] <= 10)
+            & (df["dia_semana"] < 5)
             & (df["proposito"] != "SINBAJADA")
         ]
         origen_ref = df_manana.groupby("paradero")["factor"].sum().compute()
@@ -154,11 +173,11 @@ print("LISTO.")
 
 DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 colores_dia = {
-    0: "#888888",
-    1: "#888888",
-    2: "#888888",
-    3: "#888888",
-    4: "#888888",
+    0: "#abacab",
+    1: "#abacab",
+    2: "#abacab",
+    3: "#abacab",
+    4: "#abacab",
     5: "#e07b54",
     6: "#6aab6e",
 }
@@ -167,40 +186,40 @@ anios_disp = sorted(total_anual.keys())
 ncols_sm = 3
 nrows_sm = (len(anios_disp) + ncols_sm - 1) // ncols_sm
 
-fig = plt.figure(figsize=(15, max(6, nrows_sm * 2.2)))
-gs = fig.add_gridspec(
-    nrows_sm,
-    ncols_sm + 2,
-    hspace=0.55,
-    wspace=0.5,
-    left=0.07,
-    right=0.97,
-    top=0.90,
-    bottom=0.10,
-)
+fig = plt.figure(figsize=(15, max(6, nrows_sm * 2)))
+gs = fig.add_gridspec(nrows_sm, ncols_sm + 2, hspace=0.05, wspace=0.05)
 ax_main = fig.add_subplot(gs[:, :2])
 
 df_prom = pd.Series(promedio_diario).sort_index()
 ax_main.bar(
-    df_prom.index.astype(str), df_prom.values / 1e6, color="steelblue", width=0.6
+    df_prom.index.astype(str),
+    df_prom.values / 1e6,
+    color="#abacab",
+    width=0.9,
+    edgecolor="none",
 )
-ax_main.set_xlabel("Año")
+ax_main.set_xlabel("")
 ax_main.set_ylabel("Viajes promedio por día (millones)")
 ax_main.set_title("Viajes diarios promedio por año")
 ax_main.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.1f}M"))
-for tick in ax_main.get_xticklabels():
-    tick.set_rotation(45)
 
 for idx, anio in enumerate(anios_disp):
     ax = fig.add_subplot(gs[idx // ncols_sm, idx % ncols_sm + 2])
     data = diasemana_anual.get(anio, pd.Series(dtype=float))
     vals = [(data[d] / 1e6) if d in data.index else 0 for d in range(7)]
-    ax.bar(DIAS, vals, color=[colores_dia[d] for d in range(7)], width=0.7)
+    ax.bar(
+        DIAS,
+        vals,
+        color=[colores_dia[d] for d in range(7)],
+        width=0.9,
+        edgecolor="none",
+    )
     ax.set_title(str(anio), fontsize=8, pad=2)
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.1f}M"))
     ax.tick_params(labelsize=7)
 
 fig.suptitle("Viajes promedio por día y distribución por día de semana", fontsize=11)
+fig.savefig(Path("images") / "03-viajes-totales.png", dpi=192, bbox_inches="tight")
 plt.show()
 
 
@@ -228,16 +247,19 @@ for col in cols_orden:
         bottom=base,
         label=col.capitalize(),
         color=colores[col],
-        width=0.6,
+        width=1.0,
+        edgecolor="none",
     )
     base += df_prop[col].values
 
-ax.set_xlabel("Año")
+ax.set_xlabel("")
 ax.set_ylabel("Porcentaje de viajes (%)")
 ax.set_title("Propósito de viajes por año (excluye sin bajada)")
 ax.legend(loc="upper right")
 ax.set_ylim(0, 100)
-plt.xticks(rotation=45)
+ax.set_xlim(0 - 0.5, len(ANIOS) - 0.5)
+
+fig.savefig(Path("images") / "03-propositos.png", dpi=192, bbox_inches="tight")
 plt.show()
 
 
@@ -277,6 +299,7 @@ for j in range(i + 1, len(axes_flat)):
 fig.supxlabel("Hora del día", fontsize=9)
 fig.supylabel("% de viajes", fontsize=9)
 fig.suptitle("Distribución horaria de viajes — cada año en contexto", fontsize=11)
+fig.savefig(Path("images") / "03-hora-de-viaje.png", dpi=192, bbox_inches="tight")
 plt.show()
 
 
@@ -331,6 +354,7 @@ for ax in axes_flat[len(paneles) :]:
 fig.suptitle(
     "Distancia media de viaje (km) por propósito, año y día de semana", fontsize=11
 )
+fig.savefig(Path("images") / "03-distancias.png", dpi=192, bbox_inches="tight")
 plt.show()
 
 
@@ -339,6 +363,7 @@ plt.show()
 
 import geopandas as gpd
 import numpy as np
+from chiricoca.geo.figures import small_multiples_from_geodataframe
 
 from gdsutils.censo2024 import regiones
 from gdsutils.geo import clip_geodataframe
@@ -372,18 +397,8 @@ origen_rm = preparar_mapa(origen_ref, paraderos, bbox)
 destino_rm = preparar_mapa(destino_ref, paraderos, bbox)
 print(f"Paraderos origen: {len(origen_rm):,} | destino: {len(destino_rm):,}")
 
-lon_range = bbox[2] - bbox[0]
-lat_range = bbox[3] - bbox[1]
-lat_mid = (bbox[1] + bbox[3]) / 2
-asp = (lon_range * np.cos(np.radians(abs(lat_mid)))) / lat_range
-
 panel_h = 6
-fig, (ax1, ax2) = plt.subplots(
-    1,
-    2,
-    figsize=(panel_h * asp * 2 + 0.2, panel_h),
-    gridspec_kw={"wspace": 0.02},
-)
+fig, (ax1, ax2) = small_multiples_from_geodataframe(carto_stgo, 2, panel_h)
 
 max_viajes = max(origen_rm["viajes"].max(), destino_rm["viajes"].max())
 scale = 300 / max_viajes
@@ -413,13 +428,10 @@ bubble_map(
 )
 
 for ax, titulo in [(ax1, "Paradero de subida"), (ax2, "Paradero de bajada")]:
-    ax.set_xlim(bbox[0], bbox[2])
-    ax.set_ylim(bbox[1], bbox[3])
-    ax.set_aspect("equal")
-    ax.axis("off")
     ax.set_title(titulo)
 
 fig.suptitle(f"Origen y destino de viajes matinales (06:00–10:30) — DTPM {ANIO_MAPA}")
+fig.savefig(Path("images") / "03-burbujas-od.png", dpi=192, bbox_inches="tight")
 plt.show()
 
 # %%
