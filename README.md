@@ -14,3 +14,4 @@ La carpeta `gdsutils` contiene funciones utilitarias para trabajar con los datos
 * `01-carga-datos-geograficos.py`: cómo cargar datos con `geopandas` en formato Parquet. Ejemplo con datos del Censo 2024 de Chile a nivel de comunas y manzanas.
 * `02-geografía-y-espacialidad.py`: diferencias de proporciones según la proyección, mapa de burbujas para Santiago con el censo, red de vecindad comunal.
 * `03-definir-proyecto.py`: datos de transporte público (DTPM): descarga, consolidación y análisis exploratorio de viajes 2014–2025 y paraderos del Gran Santiago.
+* `04-exploracion-espacial-lisa.py`: análisis exploratorio (incluyendo componente espacial y LISA) de la Encuesta Origen-Destino 2012 de Santiago.
