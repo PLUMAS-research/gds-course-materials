@@ -11,12 +11,16 @@ Dataset consolidado (columnas):
   ts_inicio, ts_fin, hora_inicio, minuto_inicio, hora_fin,
   tviaje_min, dist_ruta_mts, factor, proposito, contiene_metro,
   paradero, paradero_destino, comuna, n_etapas
+
+Dataset paraderos: combina el Excel de paradas (BUS) con estaciones de
+  metro y metrotren extraídas del GTFS. Columna "modo": BUS/METRO/METROTREN.
 """
 
 import csv
 import subprocess
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import dask.dataframe as dd
@@ -27,8 +31,10 @@ DIR_VIAJES = Path("data") / "dtpm-viajes"
 DIR_CONSOLIDADO = Path("data") / "dtpm-consolidado"
 RUTA_PARADEROS_RAW = Path("data") / "dtpm-raw" / "paraderos.xlsx"
 RUTA_PARADEROS_PARQUET = Path("data") / "dtpm-paraderos.parquet"
+RUTA_GTFS = Path("data") / "dtpm-raw" / "gtfs.zip"
 
 URL_PARADEROS = "https://www.dtpm.cl/descargas/pops26/2026-03-21_consolidado_Registro-Paradas_anual.xlsx"
+URL_GTFS = "https://www.dtpm.cl/descargas/gtfs/GTFS_20260321_v3.zip"
 
 # Año → lista de URLs. Algunos años tienen archivos separados por tipo de día.
 MAPEO_DTPM = {
@@ -39,28 +45,39 @@ MAPEO_DTPM = {
         "https://www.dtpm.cl/descargas/tablas/viajes201704_laboral_transparencia.rar"
     ],
     "2018": [
-        "https://www.dtpm.cl/descargas/tablas/viajes201804_laboral_transparencia.rar"
+        "https://www.dtpm.cl/descargas/tablas/viajes201804_laboral_transparencia.rar",
+        "https://www.dtpm.cl/descargas/tablas/viajes_octubre_18.zip",
     ],
-    "2019": ["https://www.dtpm.cl/descargas/tablas/tabla-viajes.rar"],
+    "2019": [
+        "https://www.dtpm.cl/descargas/tablas/tabla-viajes.rar",
+        "https://www.dtpm.cl/descargas/tablas/viajes_19.zip",
+    ],
     "2020": [
         # Semana del 9–12 mar (lun–jue) + dom 8 mar. Viernes ausente del dataset fuente.
         "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202003_laboral_transparencia.zip",
         "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202003_sab_dom_transparencia.zip",
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/nov21/viajes202011_transparencia_9al15.zip",
     ],
     "2021": [
-        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202104_transparencia.zip"
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202104_transparencia.zip",
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202111_noviembre_8al14_transparencia.zip",
     ],
     "2022": [
-        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202204_abril_4al10_transparencia-.zip"
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202204_abril_4al10_transparencia-.zip",
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes082022_8al14_transparencia.zip",
     ],
     "2023": [
-        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes_042023_17al23_transparencia.zip"
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes_042023_17al23_transparencia.zip",
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes_082023_7al13-.zip",
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes_112023_6al12.zip",
     ],
     "2024": [
-        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202404_transparencia_15al21.zip"
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/viajes202404_transparencia_15al21.zip",
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/Tabla-de-Viajes-Nov-24.zip",
     ],
     "2025": [
-        "https://www.dtpm.cl/descargas/modelos_y_matrices/Tabla-de-viajes-011025.zip"
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/Tabla-de-viajes-011025.zip",
+        "https://www.dtpm.cl/descargas/modelos_y_matrices/Tablas_viajes_NOV_2025.zip",
     ],
 }
 
@@ -85,14 +102,53 @@ _METRO_NEW = {
     "4",
 }  # 2=METRO, 4=METROTREN (verificado por comparación de magnitudes)
 
+# Normalización de nombres: esquemas antiguo e intermedio → esquema nuevo.
+# Se aplica en procesar_viajes antes de concatenar archivos con schemas distintos.
+_NORM_COLUMNAS = {
+    # Antiguo (2014–2022) → nuevo
+    "tiemposubida": "tiempo_inicio_viaje",
+    "tiempobajada": "tiempo_fin_viaje",
+    "factorexpansion": "factor_expansion",
+    "netapa": "n_etapas",
+    "paraderosubida": "paradero_inicio_viaje",
+    "paraderobajada": "paradero_fin_viaje",
+    "comunasubida": "comuna_inicio_viaje",
+    "comunabajada": "comuna_fin_viaje",
+    "dviajeenruta_mts": "distancia_ruta",
+    "dviajeeuclidiana_mts": "distancia_eucl",
+    "tipotransporte_1era": "tipo_transporte_1",
+    "tipotransporte_2da": "tipo_transporte_2",
+    "tipotransporte_3era": "tipo_transporte_3",
+    "tipotransporte_4ta": "tipo_transporte_4",
+    # Intermedio (~2023) → nuevo
+    "tiempo_inicio": "tiempo_inicio_viaje",
+    "tiempo_fin": "tiempo_fin_viaje",
+    "paradero_inicio": "paradero_inicio_viaje",
+    "paradero_fin": "paradero_fin_viaje",
+    "comuna_inicio": "comuna_inicio_viaje",
+    "comuna_fin": "comuna_fin_viaje",
+    "tipotransporte_1": "tipo_transporte_1",
+    "tipotransporte_2": "tipo_transporte_2",
+    "tipotransporte_3": "tipo_transporte_3",
+    "tipotransporte_4": "tipo_transporte_4",
+}
+
 
 # ---------------------------------------------------------------------------
 # Descarga y extracción
 # ---------------------------------------------------------------------------
 
 
-def detectar_separador(ruta_archivo, encoding="latin-1"):
+def _detectar_encoding(ruta_archivo):
+    """Detecta si un archivo tiene BOM UTF-8. Devuelve el encoding adecuado."""
+    with open(ruta_archivo, "rb") as f:
+        return "utf-8-sig" if f.read(3) == b"\xef\xbb\xbf" else "latin-1"
+
+
+def detectar_separador(ruta_archivo, encoding=None):
     """Detecta el delimitador de un CSV analizando sus primeras líneas."""
+    if encoding is None:
+        encoding = _detectar_encoding(ruta_archivo)
     with open(ruta_archivo, "r", encoding=encoding) as f:
         muestra = f.readline() + f.readline()
         try:
@@ -118,21 +174,41 @@ def _ruta_raw(anio, idx, ext):
 
 
 def descargar_viajes(anio, urls):
-    """Descarga los archivos comprimidos de viajes para un año."""
+    """Descarga los archivos comprimidos de viajes para un año.
+
+    Si una URL falla (404, timeout, etc.) se imprime el error y se continúa
+    con las siguientes.
+    """
     (Path("data") / "dtpm-raw").mkdir(parents=True, exist_ok=True)
     for idx, url in enumerate(urls):
+        url = url.strip()
         ext = url.split(".")[-1].lower()
         ruta = _ruta_raw(anio, idx, ext)
         if not ruta.exists():
             print(f"DESCARGANDO: {url}")
-            urllib.request.urlretrieve(url, ruta)
+            try:
+                urllib.request.urlretrieve(url, ruta)
+            except Exception as e:
+                print(f"ERROR DESCARGA ({url}): {e}")
+                if ruta.exists():
+                    ruta.unlink()
+                continue
 
 
-def procesar_viajes(anio, urls):
+def procesar_viajes(anio, urls, dir_temp=None):
     """Extrae y convierte a Parquet los viajes de un año.
 
     Si el Parquet ya existe, no hace nada. Descarga los archivos fuente
-    si no están en disco.
+    si no están en disco (omitiendo URLs que fallen).
+
+    Maneja CSVs con BOM UTF-8, separadores distintos entre archivos y
+    schemas mixtos (columnas diferentes) dentro del mismo año.
+
+    Parameters
+    ----------
+    dir_temp : str o Path, opcional
+        Directorio base para archivos temporales de extracción. Si es None
+        usa el default del sistema (generalmente /tmp).
     """
     DIR_VIAJES.mkdir(parents=True, exist_ok=True)
     ruta_parquet = DIR_VIAJES / f"dtpm-{anio}.parquet"
@@ -143,6 +219,7 @@ def procesar_viajes(anio, urls):
 
     rutas_raw = []
     for idx, url in enumerate(urls):
+        url = url.strip()
         ext = url.split(".")[-1].lower()
         ruta = _ruta_raw(anio, idx, ext)
         if ruta.exists() and ruta.stat().st_size < 1024:
@@ -150,13 +227,27 @@ def procesar_viajes(anio, urls):
             ruta.unlink()
         if not ruta.exists():
             print(f"DESCARGANDO: {url}")
-            urllib.request.urlretrieve(url, ruta)
-            print(f"DESCARGADO: {ruta.name} ({ruta.stat().st_size / 1024:.1f} KB)")
+            try:
+                urllib.request.urlretrieve(url, ruta)
+                print(
+                    f"DESCARGADO: {ruta.name} ({ruta.stat().st_size / 1024:.1f} KB)"
+                )
+            except Exception as e:
+                print(f"ERROR DESCARGA ({url}): {e}")
+                if ruta.exists():
+                    ruta.unlink()
+                continue
         else:
             print(f"LOCAL: {ruta.name}")
         rutas_raw.append(ruta)
 
-    with tempfile.TemporaryDirectory() as dir_temporal:
+    if not rutas_raw:
+        print(f"ERROR: No hay archivos disponibles para el año {anio}")
+        return
+
+    if dir_temp is not None:
+        Path(dir_temp).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dir_temp) as dir_temporal:
         path_temp = Path(dir_temporal)
 
         for ruta_comprimido in rutas_raw:
@@ -187,31 +278,183 @@ def procesar_viajes(anio, urls):
             print(f"EXTRAYENDO GZ ANIDADO: {gz_anidado.name}")
             subprocess.run(["gunzip", "-f", str(gz_anidado)], capture_output=True)
 
-        archivos_datos = list(path_temp.rglob("*.csv")) + list(path_temp.rglob("*.txt"))
+        archivos_datos = list(path_temp.rglob("*.csv")) + list(
+            path_temp.rglob("*.txt")
+        )
         if not archivos_datos:
             print(f"ERROR: No se hallaron datos para el año {anio}")
             return
 
-        separador = detectar_separador(archivos_datos[0])
-        print(
-            f"CONVIRTIENDO: {len(archivos_datos)} archivo(s) → dtpm-{anio}.parquet (sep='{separador}')"
-        )
+        # Agrupar archivos por (encoding, separador) para manejar schemas mixtos
+        grupos = {}
+        for archivo in archivos_datos:
+            enc = _detectar_encoding(archivo)
+            sep = detectar_separador(archivo, encoding=enc)
+            grupos.setdefault((enc, sep), []).append(archivo)
 
-        df = dd.read_csv(
-            archivos_datos,
-            sep=separador,
-            encoding="latin-1",
-            dtype=str,
-            on_bad_lines="skip",
+        partes = []
+        for (enc, sep), archivos in grupos.items():
+            print(
+                f"LEYENDO: {len(archivos)} archivo(s) (enc={enc}, sep='{sep}')"
+            )
+            parte = dd.read_csv(
+                archivos,
+                sep=sep,
+                encoding=enc,
+                dtype=str,
+                on_bad_lines="skip",
+            )
+            # Normalizar nombres: quitar comillas/espacios y unificar esquemas
+            cols_limpias = {c: c.strip().strip('"') for c in parte.columns}
+            cols_norm = {
+                orig: _NORM_COLUMNAS.get(limpio, limpio)
+                for orig, limpio in cols_limpias.items()
+            }
+            renombradas = [
+                orig for orig, dest in cols_norm.items() if orig != dest
+            ]
+            if renombradas:
+                print(f"  NORMALIZANDO: {len(renombradas)} columnas renombradas")
+            parte = parte.rename(columns=cols_norm)
+            partes.append(parte)
+
+        if len(partes) == 1:
+            df = partes[0]
+        else:
+            # Unificar schemas distintos
+            df = dd.concat(partes, join="outer")
+
+        print(
+            f"CONVIRTIENDO: {len(archivos_datos)} archivo(s) → dtpm-{anio}.parquet"
         )
         df.to_parquet(ruta_parquet, engine="pyarrow", compression="brotli")
         print(f"FINALIZADO: {ruta_parquet}")
+
+
+def _estaciones_desde_gtfs():
+    """Extrae estaciones de metro y metrotren desde el GTFS.
+
+    Descarga el ZIP si no existe, identifica rutas de tipo metro (route_type=1)
+    y metrotren (route_type=0), y devuelve un GeoDataFrame en EPSG:32719.
+
+    Metro: usa parent stations (location_type=1), una por estación física.
+    Metrotren: los stops no tienen parent station ni location_type; se
+    deduplicam por nombre (eliminando el sufijo de andén).
+    """
+    Path("data/dtpm-raw").mkdir(parents=True, exist_ok=True)
+
+    if not RUTA_GTFS.exists():
+        print(f"DESCARGANDO: {URL_GTFS}")
+        urllib.request.urlretrieve(URL_GTFS, RUTA_GTFS)
+        print(
+            f"DESCARGADO: {RUTA_GTFS.name} ({RUTA_GTFS.stat().st_size / 1024:.1f} KB)"
+        )
+    else:
+        print(f"LOCAL: {RUTA_GTFS.name}")
+
+    with zipfile.ZipFile(RUTA_GTFS) as zf:
+        routes = pd.read_csv(zf.open("routes.txt"), dtype=str)
+        trips = pd.read_csv(zf.open("trips.txt"), dtype=str)
+        stop_times = pd.read_csv(zf.open("stop_times.txt"), dtype=str)
+        stops = pd.read_csv(zf.open("stops.txt"), dtype=str)
+
+    # Separar rutas por modo: metro (subway=1) y metrotren (tram=0)
+    rutas_metro = set(routes.loc[routes["route_type"] == "1", "route_id"])
+    rutas_metrotren = set(routes.loc[routes["route_type"] == "0", "route_id"])
+    print(f"GTFS: metro {sorted(rutas_metro)} | metrotren {sorted(rutas_metrotren)}")
+
+    # Mapeo trip → route_id (solo rutas de interés)
+    rutas_todas = rutas_metro | rutas_metrotren
+    trip_route = dict(
+        zip(
+            trips.loc[trips["route_id"].isin(rutas_todas), "trip_id"],
+            trips.loc[trips["route_id"].isin(rutas_todas), "route_id"],
+        )
+    )
+
+    # stop_id → conjunto de route_ids que lo sirven
+    from collections import defaultdict
+
+    stop_rutas = defaultdict(set)
+    mask = stop_times["trip_id"].isin(trip_route)
+    for sid, tid in zip(
+        stop_times.loc[mask, "stop_id"], stop_times.loc[mask, "trip_id"]
+    ):
+        stop_rutas[sid].add(trip_route[tid])
+
+    stops_idx = stops.set_index("stop_id")
+    partes = []
+
+    # --- Metro: parent stations ---
+    parents_metro = set()
+    for sid in stop_rutas:
+        if stop_rutas[sid] & rutas_metro:
+            parent = stops_idx.at[sid, "parent_station"]
+            if parent:
+                parents_metro.add(parent)
+
+    est_metro = stops_idx.loc[stops_idx.index.isin(parents_metro)].copy()
+    est_metro["modo"] = "METRO"
+    partes.append(est_metro)
+    print(f"GTFS: {len(est_metro)} estaciones de metro")
+
+    # --- Metrotren: stops sin parent, deduplicar por nombre ---
+    sids_mt = [sid for sid in stop_rutas if stop_rutas[sid] & rutas_metrotren]
+    est_mt = stops_idx.loc[stops_idx.index.isin(sids_mt)].copy()
+    # Limpiar nombre: "Estación X (Anden1)" → "Estación X"
+    est_mt["stop_name"] = est_mt["stop_name"].str.replace(
+        r"\s*\(Anden\d+\)\s*$", "", regex=True
+    )
+    est_mt = est_mt.drop_duplicates(subset="stop_name")
+    est_mt["modo"] = "METROTREN"
+    partes.append(est_mt)
+    print(f"GTFS: {len(est_mt)} estaciones de metrotren")
+
+    estaciones = pd.concat(partes)
+    estaciones["stop_lat"] = pd.to_numeric(estaciones["stop_lat"])
+    estaciones["stop_lon"] = pd.to_numeric(estaciones["stop_lon"])
+
+    gdf = gpd.GeoDataFrame(
+        estaciones,
+        geometry=gpd.points_from_xy(estaciones["stop_lon"], estaciones["stop_lat"]),
+        crs="EPSG:4326",
+    ).to_crs("EPSG:32719")
+
+    gdf = gdf.reset_index().rename(
+        columns={
+            "stop_id": "Código paradero TS",
+            "stop_code": "Código  paradero Usuario",
+            "stop_name": "Nombre Paradero",
+        }
+    )
+    gdf["Operación con Zona Paga"] = None
+    gdf["Comuna"] = None
+    gdf["Eje"] = None
+    gdf["Desde ( Cruce 1)"] = None
+    gdf["Hacia ( Cruce 2)"] = None
+
+    return gdf[
+        [
+            "Código paradero TS",
+            "Código  paradero Usuario",
+            "Nombre Paradero",
+            "Operación con Zona Paga",
+            "Comuna",
+            "Eje",
+            "Desde ( Cruce 1)",
+            "Hacia ( Cruce 2)",
+            "modo",
+            "geometry",
+        ]
+    ]
 
 
 def procesar_paraderos():
     """Descarga el Excel de paraderos y lo convierte a Parquet con geometría.
 
     Coordenadas x/y en UTM Zone 19S (EPSG:32719). Deduplica por código TS.
+    Incorpora estaciones de metro/metrotren desde el GTFS (no incluidas en
+    el archivo de paraderos).
     """
     Path("data/dtpm-raw").mkdir(parents=True, exist_ok=True)
 
@@ -244,21 +487,30 @@ def procesar_paraderos():
     paraderos = gpd.GeoDataFrame(
         df, geometry=gpd.points_from_xy(df["x"], df["y"]), crs="EPSG:32719"
     )
-    print(f"Registros: {len(paraderos):,} | CRS: {paraderos.crs}")
+    print(f"Registros paraderos: {len(paraderos):,} | CRS: {paraderos.crs}")
 
-    paraderos.drop_duplicates(subset="Código paradero TS")[
-        [
-            "Código paradero TS",
-            "Código  paradero Usuario",
-            "Nombre Paradero",
-            "Operación con Zona Paga",
-            "Comuna",
-            "Eje",
-            "Desde ( Cruce 1)",
-            "Hacia ( Cruce 2)",
-            "geometry",
-        ]
-    ].to_parquet(RUTA_PARADEROS_PARQUET, engine="pyarrow", compression="brotli")
+    paraderos["modo"] = "BUS"
+    cols = [
+        "Código paradero TS",
+        "Código  paradero Usuario",
+        "Nombre Paradero",
+        "Operación con Zona Paga",
+        "Comuna",
+        "Eje",
+        "Desde ( Cruce 1)",
+        "Hacia ( Cruce 2)",
+        "modo",
+        "geometry",
+    ]
+    paraderos = paraderos.drop_duplicates(subset="Código paradero TS")[cols]
+
+    # Agregar estaciones de metro/metrotren desde GTFS
+    estaciones = _estaciones_desde_gtfs()
+    resultado = pd.concat([paraderos, estaciones], ignore_index=True)
+    resultado = resultado.drop_duplicates(subset="Código paradero TS")
+
+    print(f"Total (paraderos + estaciones): {len(resultado):,}")
+    resultado.to_parquet(RUTA_PARADEROS_PARQUET, engine="pyarrow", compression="brotli")
     print(f"FINALIZADO: {RUTA_PARADEROS_PARQUET}")
 
 
@@ -349,14 +601,20 @@ def consolidar_anio(anio):
     df["paradero_destino"] = df["paradero_destino"].replace({"-": None})
 
     df["ts_inicio"] = df["tiempo"].map_partitions(
-        lambda s: pd.to_datetime(s, format="%Y-%m-%d %H:%M:%S", errors="coerce"),
+        lambda s: pd.to_datetime(s, format="ISO8601", errors="coerce"),
         meta=("ts_inicio", "datetime64[ns]"),
     )
     df["ts_fin"] = df["t_fin"].map_partitions(
-        lambda s: pd.to_datetime(s, format="%Y-%m-%d %H:%M:%S", errors="coerce"),
+        lambda s: pd.to_datetime(s, format="ISO8601", errors="coerce"),
         meta=("ts_fin", "datetime64[ns]"),
     )
     df = df.drop(columns=["tiempo", "t_fin"])
+
+    # Descartar filas sin timestamp de inicio (datos corruptos o schema incompatible)
+    total = len(df)
+    n_nulos = df["ts_inicio"].isnull().sum().compute()
+    df = df[df["ts_inicio"].notnull()]
+    print(f"({n_nulos:,} filas sin timestamp / {total:,} total) ", end="", flush=True)
 
     df["fecha"] = df["ts_inicio"].dt.strftime("%Y-%m-%d")
     df["anio"] = df["ts_inicio"].dt.year.astype("int16")

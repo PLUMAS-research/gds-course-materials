@@ -48,6 +48,10 @@ from gdsutils.dtpm import (
 
 ANIOS = list(range(2014, 2026))
 
+# Directorio para archivos temporales de extracción.
+# Cambiar si /tmp no tiene suficiente espacio (ej. tmpfs pequeño).
+DIR_TEMP = "./tmp"  # None = default del sistema (/tmp)
+
 for anio, urls in MAPEO_DTPM.items():
     if (DIR_CONSOLIDADO / f"dtpm-{anio}.parquet").exists():
         continue
@@ -60,7 +64,7 @@ for anio, urls in MAPEO_DTPM.items():
     if (DIR_CONSOLIDADO / f"dtpm-{anio}.parquet").exists():
         continue
     try:
-        procesar_viajes(anio, urls)
+        procesar_viajes(anio, urls, dir_temp=DIR_TEMP)
     except Exception as e:
         print(f"ERROR DE PROCESAMIENTO en año {anio}: {e}")
 
