@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "chiricoca",
     "dask>=2026.1.2",
+    "esda>=2.6.0",
     "gensim>=4.4.0",
     "ipykernel>=7.2.0",
     "libpysal>=4.14.1",
