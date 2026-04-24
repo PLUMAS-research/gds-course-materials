@@ -175,7 +175,7 @@ for _, row in top.iterrows():
     )
 
 ax.set_title(
-    "Población migrante por distrito censal (Gran Santiago)\nTamaño: n° migrantes · Color: tamaño del hogar"
+    "Población migrante por distrito censal (Gran Santiago)\nTamaño: n° migrantes; Color: tamaño del hogar"
 )
 
 # %% ========================================

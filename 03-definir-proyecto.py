@@ -93,14 +93,14 @@ ANIO_MAPA = ANIOS[-1]
 # %%
 # Cómputo de agregados por año
 
-total_anual = {}  # anio → total de viajes en el período (depende de cuántos días cubre)
-promedio_diario = {}  # anio → promedio diario (comparable entre años)
-diasemana_anual = {}  # anio → Series con viajes promedio por día de semana (0=lun…6=dom)
-prop_anual = {}  # anio → Series con % por propósito (excluye sin bajada)
-horas_anual = {}  # anio → Series con % de viajes por hora del día
-dist_prop_anual = {}  # anio → DataFrame(proposito × dia_semana) con distancia media (km)
-origen_ref = None  # paradero → viajes matinales expandidos (ANIO_MAPA)
-destino_ref = None  # paradero_destino → viajes matinales expandidos (ANIO_MAPA)
+total_anual = {}  # anio -> total de viajes en el período (depende de cuántos días cubre)
+promedio_diario = {}  # anio -> promedio diario (comparable entre años)
+diasemana_anual = {}  # anio -> Series con viajes promedio por día de semana (0=lun..6=dom)
+prop_anual = {}  # anio -> Series con % por propósito (excluye sin bajada)
+horas_anual = {}  # anio -> Series con % de viajes por hora del día
+dist_prop_anual = {}  # anio -> DataFrame(proposito x dia_semana) con distancia media (km)
+origen_ref = None  # paradero -> viajes matinales expandidos (ANIO_MAPA)
+destino_ref = None  # paradero_destino -> viajes matinales expandidos (ANIO_MAPA)
 
 for anio in ANIOS:
     ruta = DIR_CONSOLIDADO / f"dtpm-{anio}.parquet"
@@ -268,7 +268,7 @@ plt.show()
 
 
 # %%
-# Gráfico 3: distribución horaria — small multiples con todos los años como contexto
+# Gráfico 3: distribución horaria como small multiples con todos los años como contexto
 
 df_horas = pd.DataFrame(horas_anual).fillna(0).sort_index()
 anios_disp = sorted(horas_anual.keys())
@@ -302,7 +302,7 @@ for j in range(i + 1, len(axes_flat)):
 
 fig.supxlabel("Hora del día", fontsize=9)
 fig.supylabel("% de viajes", fontsize=9)
-fig.suptitle("Distribución horaria de viajes — cada año en contexto", fontsize=11)
+fig.suptitle("Distribución horaria de viajes con cada año en contexto", fontsize=11)
 fig.savefig(Path("images") / "03-hora-de-viaje.png", dpi=192, bbox_inches="tight")
 plt.show()
 
@@ -434,7 +434,7 @@ bubble_map(
 for ax, titulo in [(ax1, "Paradero de subida"), (ax2, "Paradero de bajada")]:
     ax.set_title(titulo)
 
-fig.suptitle(f"Origen y destino de viajes matinales (06:00–10:30) — DTPM {ANIO_MAPA}")
+fig.suptitle(f"Origen y destino de viajes matinales (06:00 a 10:30) en DTPM {ANIO_MAPA}")
 fig.savefig(Path("images") / "03-burbujas-od.png", dpi=192, bbox_inches="tight")
 plt.show()
 

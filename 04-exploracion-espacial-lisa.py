@@ -86,7 +86,7 @@ print(f"Viajes expandidos: {viajes_personas['Peso'].sum():,.0f}")
 
 # %%
 # ========================================
-# PARTE 2: Qué — Propósitos de viaje
+# PARTE 2: Qué (propósitos de viaje)
 # ========================================
 # La EOD registra 14 propósitos de viaje. Los agrupamos en cuatro categorías:
 # Cuidado (salud, compras, trámites, acompañar), Empleo/Estudio,
@@ -105,7 +105,7 @@ print(viajes_personas["PropositoAgregado"].value_counts(dropna=False))
 
 # %%
 # ========================================
-# PARTE 3: Cómo — Modo de transporte
+# PARTE 3: Cómo (modo de transporte)
 # ========================================
 # ¿En qué se mueve la gente? El marimekko muestra volumen (ancho) y
 # composición por sexo (alto) de cada modo. El slopegraph compara las
@@ -198,7 +198,7 @@ plt.show()
 
 # %%
 # ========================================
-# PARTE 4: Cuándo — Perfil temporal
+# PARTE 4: Cuándo (perfil temporal)
 # ========================================
 # Cada panel muestra la distribución horaria de viajes por propósito,
 # separada por sexo. La comparación revela si hombres y mujeres viajan
@@ -275,7 +275,7 @@ plt.show()
 
 # %%
 # ========================================
-# PARTE 5: Dónde — Distribución geográfica
+# PARTE 5: Dónde (distribución geográfica)
 # ========================================
 # Pasamos de las dimensiones tabulares (qué, cómo, cuándo) a la espacial.
 # Primero mostramos la distribución de destinos como puntos; después
@@ -324,7 +324,7 @@ for ax, proposito in zip(axes, PROPOSITOS):
 for ax in axes[len(PROPOSITOS) :]:
     ax.set_visible(False)
 
-fig.suptitle("Destinos de viajes por propósito — EOD Santiago 2012")
+fig.suptitle("Destinos de viajes por propósito (EOD Santiago 2012)")
 fig.savefig(IMAGES / "04-destinos-proposito.png", dpi=192, bbox_inches="tight")
 plt.show()
 
@@ -365,7 +365,7 @@ for p in PROPOSITOS:
     print(f"  {p}: media={geodf_zonas[p].mean():.3f}, std={geodf_zonas[p].std():.3f}")
 
 # %%
-# Mapas coropléticos — Anscombe(viajes recibidos) por propósito
+# Mapas coropléticos: Anscombe(viajes recibidos) por propósito
 
 fig, axes = small_multiples_from_geodataframe(
     zonas_eod, len(PROPOSITOS), col_wrap=2, height=6
@@ -388,7 +388,7 @@ for ax, proposito in zip(axes, PROPOSITOS):
 for ax in axes[len(PROPOSITOS) :]:
     ax.set_visible(False)
 
-fig.suptitle("Anscombe(viajes recibidos) por propósito — Zonas EOD (destinos)")
+fig.suptitle("Anscombe(viajes recibidos) por propósito en zonas EOD (destinos)")
 fig.savefig(IMAGES / "04-prop-cuidado-zonas-eod.png", dpi=192, bbox_inches="tight")
 plt.show()
 
@@ -418,7 +418,7 @@ for proposito in PROPOSITOS:
 moran_zonas = moran_por_proposito["Empleo/Estudio"]
 
 # %%
-# Diagramas de dispersión de Moran — uno por propósito
+# Diagramas de dispersión de Moran, uno por propósito
 # Eje X: valor estandarizado; eje Y: promedio ponderado de vecinos (spatial lag).
 
 fig, axes = plt.subplots(2, 2, figsize=(10, 10))
@@ -458,7 +458,7 @@ for ax, proposito in zip(axes.flatten(), PROPOSITOS):
     sns.despine(ax=ax)
 
 fig.suptitle(
-    "Diagramas de Moran — Anscombe(viajes) por propósito (destinos, zonas EOD)"
+    "Diagramas de Moran sobre Anscombe(viajes) por propósito (destinos, zonas EOD)"
 )
 fig.savefig(IMAGES / "04-moran-scatter-zonas.png", dpi=192, bbox_inches="tight")
 plt.show()
@@ -466,7 +466,7 @@ plt.show()
 
 # %%
 # ========================================
-# PARTE 7: LISA — Indicadores locales
+# PARTE 7: LISA (indicadores locales)
 # ========================================
 # LISA (Local Indicators of Spatial Association) descompone el I de Moran
 # global en contribuciones locales. Identifica clusters espaciales:
@@ -486,7 +486,7 @@ for proposito in PROPOSITOS:
 lisa_zonas, _ = lisas_por_proposito["Empleo/Estudio"]
 
 # %%
-# Mapas LISA — uno por propósito
+# Mapas LISA, uno por propósito
 
 fig, axes = small_multiples_from_geodataframe(
     zonas_eod, len(PROPOSITOS), col_wrap=2, height=7
@@ -501,14 +501,14 @@ categorical_color_legend(axes[-1], COLORES_LISA, loc="lower right")
 for ax in axes[len(PROPOSITOS) :]:
     ax.set_visible(False)
 
-fig.suptitle("LISA — Anscombe(viajes recibidos) por propósito (zonas EOD, destinos)")
+fig.suptitle("LISA: Anscombe(viajes recibidos) por propósito (zonas EOD, destinos)")
 fig.savefig(IMAGES / "04-lisa-zonas-eod.png", dpi=192, bbox_inches="tight")
 plt.show()
 
 
 # %%
 # ========================================
-# PARTE 8: MAUP — Efecto de la escala espacial
+# PARTE 8: MAUP (efecto de la escala espacial)
 # ========================================
 # El Problema de la Unidad de Área Modificable (MAUP) muestra que los
 # resultados de un análisis espacial dependen de la unidad de agregación.
@@ -712,7 +712,7 @@ for proposito in PROPOSITOS:
     print(f"{proposito}: I={moran.I:.4f} (p={moran.p_norm:.4f})")
 
 # %%
-# Mapas LISA — grilla H3 nivel 8, un panel por propósito
+# Mapas LISA, grilla H3 nivel 8 con un panel por propósito
 
 fig, axes = small_multiples_from_geodataframe(
     carto_stgo, len(PROPOSITOS), col_wrap=2, height=7
@@ -728,7 +728,7 @@ for ax in axes[len(PROPOSITOS) :]:
     ax.set_visible(False)
 
 fig.suptitle(
-    "LISA: Anscombe(viajes recibidos) por propósito — Grilla H3 nivel 8 (destinos)"
+    "LISA: Anscombe(viajes recibidos) por propósito en grilla H3 nivel 8 (destinos)"
 )
 fig.savefig(IMAGES / "04-lisa-h3-proposito.png", dpi=192, bbox_inches="tight")
 plt.show()
