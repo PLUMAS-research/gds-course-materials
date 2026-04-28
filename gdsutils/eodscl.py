@@ -108,6 +108,113 @@ def calcular_viajes_proposito(df, col_zona, propositos=None, col_peso="Peso"):
     return pd.DataFrame(resultado).fillna(0)
 
 
+def calcular_poblacion_flotante(
+    viajes,
+    geodf_celdas,
+    columna_id_celda,
+    propositos_excluidos=("volver a casa", "Visitar a alguien"),
+    franja_diurna=(7, 19),
+    col_peso="Peso",
+    col_persona="Persona",
+    col_x="DestinoCoordX",
+    col_y="DestinoCoordY",
+    col_hora_ini="HoraIni",
+    col_hora_fin="HoraFin",
+    crs_eod="EPSG:32719",
+):
+    """Población flotante promedio diurna por celda, a partir de viajes EOD.
+
+    Para cada viaje, la permanencia en el destino se estima como
+    HoraIni del siguiente viaje de la misma persona menos HoraFin actual.
+    Si no hay viaje siguiente, se capea al cierre de la franja diurna.
+    Se descartan viajes con propósito en ``propositos_excluidos`` (destinos
+    residenciales). Se suma col_peso * permanencia_diurna por celda y se
+    divide por la duración de la franja para obtener personas presentes en
+    promedio durante el día.
+
+    Parameters
+    ----------
+    viajes : DataFrame
+        Viajes EOD. Debe contener col_persona, col_hora_ini, col_hora_fin,
+        col_x, col_y, col_peso y "Proposito".
+    geodf_celdas : GeoDataFrame
+        Celdas espaciales (H3, comunas, zonas, etc.). Cualquier CRS.
+    columna_id_celda : str
+        Identificador de celda en geodf_celdas.
+    propositos_excluidos : tuple
+        Propósitos cuyo destino no aporta a población flotante pública.
+    franja_diurna : tuple of (lo, hi)
+        Franja horaria considerada, en horas (0-24).
+    col_peso : str
+        Factor de expansión por viaje (típicamente FactorExpansion * FactorPersona).
+
+    Returns
+    -------
+    pd.Series indexada por columna_id_celda con la población flotante.
+    """
+    lo, hi = franja_diurna
+    duracion_franja = hi - lo
+
+    df = viajes.copy()
+
+    # Normalizar HoraIni y HoraFin a horas (float)
+    def _a_horas(serie):
+        if pd.api.types.is_timedelta64_dtype(serie):
+            return serie.dt.total_seconds() / 3600.0
+        return pd.to_timedelta(serie.astype(str) + ":00").dt.total_seconds() / 3600.0
+
+    df["_h_ini"] = _a_horas(df[col_hora_ini])
+    df["_h_fin"] = _a_horas(df[col_hora_fin])
+
+    # Viajes que cruzan medianoche: HoraFin aparente menor que HoraIni
+    cruza = df["_h_fin"] < df["_h_ini"]
+    df.loc[cruza, "_h_fin"] += 24.0
+
+    df = df.sort_values([col_persona, "_h_ini"]).reset_index(drop=True)
+
+    # Shift global y máscara de cambio de persona (evita groupby)
+    h_siguiente = df["_h_ini"].shift(-1)
+    persona_siguiente = df[col_persona].shift(-1)
+    ultimo = df[col_persona] != persona_siguiente
+    h_siguiente = h_siguiente.where(~ultimo, hi)
+
+    # Solapamiento del intervalo [HoraFin, HoraIni_siguiente] con [lo, hi]
+    inicio_d = df["_h_fin"].clip(lower=lo, upper=hi)
+    fin_d = h_siguiente.clip(lower=lo, upper=hi)
+    permanencia = (fin_d - inicio_d).clip(lower=0)
+
+    valido = (
+        (~df["Proposito"].isin(propositos_excluidos))
+        & (permanencia > 0)
+        & df[col_x].notna()
+        & df[col_y].notna()
+        & df[col_peso].notna()
+    )
+
+    contribucion = (
+        df.loc[valido, col_peso].astype(float)
+        * permanencia[valido].astype(float)
+    )
+
+    puntos = gpd.GeoDataFrame(
+        {"_contribucion": contribucion.values},
+        geometry=gpd.points_from_xy(
+            df.loc[valido, col_x].values, df.loc[valido, col_y].values
+        ),
+        crs=crs_eod,
+    )
+
+    celdas = geodf_celdas[[columna_id_celda, "geometry"]]
+    if celdas.crs != puntos.crs:
+        celdas = celdas.to_crs(puntos.crs)
+
+    asignado = gpd.sjoin(puntos, celdas, how="inner", predicate="within")
+
+    pob = asignado.groupby(columna_id_celda)["_contribucion"].sum() / duracion_franja
+    pob.name = "poblacion_flotante"
+    return pob
+
+
 def cargar_zonas_estudio(census_parquet, bbox, comunas_excluidas=None):
     """
     Carga el parquet comunal censal 2024 (región 13), recorta al bounding box,
