@@ -439,8 +439,8 @@ wheels = [
 
 [[package]]
 name = "chiricoca"
-version = "0.2"
-source = { git = "https://github.com/PLUMAS-research/chiricoca.git#19130c8519e30083970930713421671f33c89b61" }
+version = "0.2.2"
+source = { git = "https://github.com/PLUMAS-research/chiricoca.git#6995b586b01c8adb91563e1174e1daaefb30ce0a" }
 dependencies = [
     { name = "adjusttext" },
     { name = "contextily" },
