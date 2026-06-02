@@ -74,6 +74,44 @@ print(
     f"CRS {calles_completo.crs.to_string()}"
 )
 
+# %% [markdown]
+# ### Anatomia de los datos OSM
+#
+# OpenStreetMap modela las calles como **ways**: secuencias ordenadas
+# de coordenadas que forman una linea, con atributos como `name` y
+# `highway`. Al exportar a GeoDataFrame cada way queda como un
+# LineString.
+#
+# Detalle clave para construir un grafo: cuando dos calles distintas
+# se cruzan en una esquina, OSM guarda **dos LineStrings que pasan por
+# el mismo punto**, pero ese punto **no aparece como un nodo separado**
+# en ninguna de las dos ways. Por eso `construir_grafo_desde_lineas`
+# detecta intersecciones internas antes de armar el grafo: si no, una
+# avenida larga que cruza diez esquinas seguiria siendo una sola
+# arista. Las columnas tipicas son `name`, `highway` (categoria vial),
+# `geometry` (LineString); el resto son tags opcionales.
+
+# %%
+print("Columnas disponibles en el parquet:")
+print(list(calles_completo.columns))
+print("\nPrimeras filas (atributos no geometricos):")
+cols_meta = [c for c in calles_completo.columns if c != "geometry"][:6]
+print(calles_completo[cols_meta].head(5).to_string(index=False))
+
+# Una way concreta: tipo de geometria y secuencia de vertices.
+geom_ej = calles_completo.geometry.iloc[0]
+# Para medir el largo en metros, proyectamos a UTM 19S antes (en
+# EPSG:4326 los grados de lat y lon no miden lo mismo).
+largo_m_ej = (
+    gpd.GeoSeries([geom_ej], crs="EPSG:4326").to_crs(CRS_METRICO).length.iloc[0]
+)
+print(f"\nGeometria de la fila 0:")
+print(f"  Tipo:      {geom_ej.geom_type}")
+print(f"  Vertices:  {len(geom_ej.coords)}")
+print(f"  Largo:     {largo_m_ej:.0f} m (proyectado a UTM 19S)")
+print(f"  Primeros 3 vertices (lon, lat): {list(geom_ej.coords)[:3]}")
+
+# %%
 BBOX_SANTIAGO_CENTRO = (-70.68, -33.46, -70.62, -33.42)
 # clip() recorta las LineStrings al bbox: las ways largas (avenidas)
 # quedan partidas en el limite en vez de extenderse fuera. Sin esto,
@@ -88,6 +126,51 @@ print(f"Calles en Santiago Centro: {len(calles_centro)}")
 
 g_calles, nodos_calles, aristas_calles = construir_grafo_desde_lineas(
     calles_centro, tolerancia_metros=2.0
+)
+
+# %% [markdown]
+# ### Anatomia del grafo
+#
+# `construir_grafo_desde_lineas` devuelve tres objetos sincronizados:
+#
+#   - `g_calles`: un `networkx.MultiGraph`. Es Multi porque dos
+#     intersecciones pueden estar unidas por mas de una calle (e.g.,
+#     una avenida y un pasaje). Cada nodo guarda `x`, `y` (sus
+#     coordenadas); cada arista guarda `largo_m` (en metros, calculado
+#     en UTM 19S) y `geometry` (el LineString del segmento).
+#   - `nodos_calles`: GeoDataFrame con `node_id`, geometria `Point`.
+#     Sirve para visualizar nodos y para hacer joins espaciales.
+#   - `aristas_calles`: GeoDataFrame con `u`, `v` (los ids de los nodos
+#     extremos), `largo_m` y la geometria del segmento.
+#
+# El truco de usar dos representaciones (NetworkX + GeoPandas) es
+# estandar: NetworkX es eficiente para algoritmos de grafos pero no
+# sabe nada de geometria; GeoPandas pinta mapas pero no calcula
+# caminos cortos. Mantener ambas con los mismos ids permite ir y
+# venir.
+
+# %%
+print(f"Tipo del grafo: {type(g_calles).__name__}")
+print(
+    f"Nodos: {g_calles.number_of_nodes()}, "
+    f"Aristas: {g_calles.number_of_edges()}"
+)
+print("\nPrimeros 3 nodos con sus atributos (formato NetworkX):")
+for n, datos in list(g_calles.nodes(data=True))[:3]:
+    print(f"  node_id={n}: {datos}")
+
+print("\nPrimeras 3 aristas con sus atributos (sin la geometria):")
+for u, v, datos in list(g_calles.edges(data=True))[:3]:
+    sin_geom = {k: round(v, 2) if isinstance(v, float) else v
+                for k, v in datos.items() if k != "geometry"}
+    print(f"  ({u} -- {v}): {sin_geom}")
+
+print("\nGeoDataFrame de nodos (head):")
+print(nodos_calles.head(3).to_string(index=False))
+
+print("\nGeoDataFrame de aristas (head, sin geometry):")
+print(
+    aristas_calles.drop(columns="geometry").head(3).to_string(index=False)
 )
 
 # %%
@@ -852,6 +935,72 @@ print(
 )
 print("\nTipos de servicio (route_type) en el GTFS DTPM:")
 print(routes["route_type"].value_counts())
+
+# %% [markdown]
+# ### Anatomia del GTFS
+#
+# GTFS (General Transit Feed Specification) describe la oferta de
+# transporte publico en un conjunto de archivos CSV. Las tablas que
+# usamos en esta clase y como se conectan:
+#
+#   - `routes.txt`: una linea o servicio (e.g., "Linea 1" del metro, o
+#     el recorrido 506 de bus). Campos: `route_id`, `route_short_name`,
+#     `route_long_name`, `route_type` (en DTPM: 0=metrotren, 1=metro,
+#     3=bus, sin tranvias).
+#   - `trips.txt`: una corrida especifica de una ruta (la salida de las
+#     06:15 de la 506 hacia el oeste). Campos: `trip_id`, `route_id`,
+#     `shape_id`, `direction_id`.
+#   - `shapes.txt`: secuencia de puntos lat/lon que dibuja el recorrido
+#     fisico de un trip. Indexada por `shape_id` + `shape_pt_sequence`.
+#   - `stops.txt`: paraderos (`stop_id`, `stop_lat`, `stop_lon`,
+#     `stop_name`, `stop_code`).
+#   - `stop_times.txt`: la tabla mas grande. Por cada trip dice que
+#     paraderos toca y cuando: (`trip_id`, `stop_id`, `stop_sequence`,
+#     `arrival_time`, `departure_time`). Es lo que une trips con stops.
+#   - `frequencies.txt` (opcional): cuando un servicio tiene horario
+#     repetido (cada N minutos entre HH:MM y HH:MM), aqui se registra
+#     el headway en lugar de generar miles de filas de stop_times.
+#
+# **Tip DTPM (importante):** los `arrival_time` y `departure_time` de
+# DTPM son **relativos al inicio del trip** (todos arrancan en
+# 0:00:00), no tiempos del reloj. Las horas absolutas viven en
+# `frequencies.txt`. Por eso para contar viajes por hora del dia
+# usamos frequencies, no stop_times.
+#
+# Esquema de relaciones:
+#
+#     routes <--- trips <--- stop_times ---> stops
+#                  |
+#                  +--> shapes
+#                  +--> frequencies
+
+# %%
+print("routes.txt (head):")
+print(routes.head(3)[
+    ["route_id", "route_short_name", "route_long_name", "route_type"]
+].to_string(index=False))
+
+print("\ntrips.txt (head):")
+print(trips.head(3)[
+    [c for c in ["route_id", "trip_id", "shape_id", "direction_id"]
+     if c in trips.columns]
+].to_string(index=False))
+
+print("\nstops.txt (head):")
+print(stops.head(3)[
+    ["stop_id", "stop_code", "stop_name", "stop_lat", "stop_lon"]
+].to_string(index=False))
+
+print("\nstop_times.txt (head, primeras paradas del primer trip):")
+print(stop_times.head(5)[
+    ["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"]
+].to_string(index=False))
+
+print("\nshapes.txt (head):")
+print(shapes.head(3).to_string(index=False))
+
+print("\nfrequencies.txt (head):")
+print(frequencies.head(3).to_string(index=False))
 
 # %%
 # Modos como categoria reutilizable en los descriptivos.
