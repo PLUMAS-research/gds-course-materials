@@ -12,7 +12,9 @@ usuario pueda trabajar sobre el grafo (networkx) y sobre las geometrías
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
+from pathlib import Path
 
 import geopandas as gpd
 import networkx as nx
@@ -21,6 +23,8 @@ import pandas as pd
 from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point
 from shapely.ops import substring
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 CRS_METRICO = "EPSG:32719"
 
@@ -577,3 +581,571 @@ def grafo_a_geodataframe(
 
     aristas = gpd.GeoDataFrame(aristas_filas, geometry=geoms, crs=crs)
     return nodos, aristas
+
+
+# ---------------------------------------------------------------------------
+# Análisis OD con PMI y modelo nulo
+# ---------------------------------------------------------------------------
+
+
+def matriz_od_por_categoria(
+    viajes: pd.DataFrame,
+    col_origen: str,
+    col_destino: str,
+    col_categoria: str,
+    col_peso: str = "Peso",
+    total_minimo: float = 0.0,
+) -> pd.DataFrame:
+    """Construye la matriz O-D pivotada por categoría.
+
+    Cada fila es un par O-D (MultiIndex), cada columna es una categoría
+    (e.g. Sexo, Sexo_Proposito), con valor igual a la suma de pesos.
+    Agrega una columna Total con la suma por fila y filtra a pares con
+    Total > `total_minimo`.
+
+    Parámetros
+    ----------
+    viajes : DataFrame
+        Tabla larga de viajes con una fila por viaje.
+    col_origen, col_destino : str
+        Columnas que identifican origen y destino (e.g. ids H3).
+    col_categoria : str
+        Columna con la categoría del viaje (e.g. "Sexo" o "GenProp").
+    col_peso : str
+        Columna con el peso del viaje (default "Peso", factor de expansión).
+    total_minimo : float
+        Filtra pares O-D con Total <= total_minimo.
+
+    Retorna
+    -------
+    DataFrame con MultiIndex (col_origen, col_destino), una columna por
+    categoría más la columna Total. Las columnas tienen los nombres de
+    las categorías observadas en los datos.
+    """
+    pivot = (
+        viajes.groupby([col_origen, col_destino, col_categoria])[col_peso]
+        .sum()
+        .unstack(fill_value=0)
+    )
+    pivot["Total"] = pivot.sum(axis=1)
+    if total_minimo > 0:
+        pivot = pivot[pivot["Total"] > total_minimo]
+    return pivot
+
+
+def pmi_od(
+    od_df: pd.DataFrame,
+    columnas: list[str],
+    suavizado: float = 0.5,
+) -> pd.DataFrame:
+    """Calcula el Pointwise Mutual Information por categoría para cada par O-D.
+
+    PMI(arista, categoria) = log2( P(arista | categoria) / P(arista) )
+
+    Positivo = la categoría sobre-representa esa arista; negativo = la sub-representa.
+    Se aplica suavizado aditivo (Laplace) para evitar log(0).
+
+    Parámetros
+    ----------
+    od_df : DataFrame
+        Matriz O-D pivotada (e.g. salida de `matriz_od_por_categoria`).
+        El índice puede ser cualquiera; las columnas relevantes son `columnas`.
+    columnas : list[str]
+        Nombres de las columnas de categoría sobre las que calcular PMI.
+    suavizado : float
+        Constante de suavizado aditivo. Default 0.5.
+
+    Retorna
+    -------
+    DataFrame con las mismas filas que `od_df` y una columna por categoría
+    en `columnas`, conteniendo el valor PMI en bits.
+    """
+    df = od_df[columnas].copy().astype(float) + suavizado
+
+    total_arista = df.sum(axis=1)
+    total_categoria = df.sum(axis=0)
+    total_global = df.values.sum()
+
+    resultado = pd.DataFrame(index=df.index, dtype=float)
+    for col in columnas:
+        p_arista_dado_cat = df[col] / total_categoria[col]
+        p_arista = total_arista / total_global
+        resultado[col] = np.log2(p_arista_dado_cat / p_arista)
+    return resultado
+
+
+def subgrafo_pmi(
+    od_df: pd.DataFrame,
+    categoria: str,
+    columnas: list[str],
+    suavizado: float = 0.5,
+    umbral_pmi: float = 0.0,
+    min_viajes: float = 0.0,
+) -> nx.DiGraph:
+    """Construye el subgrafo dirigido inducido por PMI para una categoría.
+
+    Incluye solo las aristas con PMI(arista, categoria) > umbral_pmi
+    y al menos min_viajes en esa categoría.
+
+    El DataFrame od_df debe tener MultiIndex (origen, destino) o columnas
+    grid_origen, grid_destino.
+
+    Parámetros
+    ----------
+    od_df : DataFrame con la matriz O-D (resultado de matriz_od_por_categoria).
+    categoria : str
+        Categoría para la que se construye el subgrafo (e.g. "Mujer_Cuidado").
+    columnas : list[str]
+        Todas las categorías presentes (necesario para calcular PMI).
+    suavizado : float
+        Suavizado para PMI.
+    umbral_pmi : float
+        PMI mínimo para incluir la arista.
+    min_viajes : float
+        Mínimo de peso en la categoría para incluir la arista.
+
+    Retorna
+    -------
+    nx.DiGraph con atributos `pmi` y `peso` en cada arista.
+    """
+    pmi_df = pmi_od(od_df, columnas, suavizado=suavizado)
+
+    if isinstance(od_df.index, pd.MultiIndex):
+        od_plano = od_df.reset_index()
+        pmi_plano = pmi_df.reset_index(drop=True)
+        col_o, col_d = od_df.index.names
+    else:
+        od_plano = od_df
+        pmi_plano = pmi_df
+        col_o, col_d = "grid_origen", "grid_destino"
+
+    grafo = nx.DiGraph()
+    valores_pmi = pmi_plano[categoria].values
+    valores_peso = od_plano[categoria].astype(float).values
+    origenes = od_plano[col_o].values
+    destinos = od_plano[col_d].values
+
+    for i in range(len(od_plano)):
+        v_pmi = valores_pmi[i]
+        v_peso = valores_peso[i]
+        if pd.notna(v_pmi) and v_pmi > umbral_pmi and v_peso >= min_viajes:
+            grafo.add_edge(
+                origenes[i], destinos[i],
+                pmi=float(v_pmi), peso=float(v_peso),
+            )
+    return grafo
+
+
+def aristas_en_triangulos(grafo: nx.DiGraph) -> set[tuple]:
+    """Identifica aristas dirigidas que participan en al menos un triángulo.
+
+    Usa la proyección no dirigida: una arista (u, v) participa en triángulo
+    si u y v comparten al menos un vecino (sin importar dirección).
+
+    Retorna
+    -------
+    Set de tuplas (u, v) para las aristas dirigidas en triángulo.
+    """
+    grafo_und = grafo.to_undirected()
+    en_triangulo = set()
+    for u, v in grafo.edges():
+        if u == v:
+            continue
+        comunes = set(grafo_und.neighbors(u)) & set(grafo_und.neighbors(v))
+        if comunes:
+            en_triangulo.add((u, v))
+    return en_triangulo
+
+
+def metricas_subgrafo(grafo: nx.DiGraph) -> dict:
+    """Métricas topológicas del subgrafo: clustering, triángulos, densidad.
+
+    Las métricas de clustering y triángulos se calculan sobre la versión
+    no dirigida del grafo (los algoritmos clásicos están definidos así).
+
+    Retorna
+    -------
+    dict con:
+        - clustering : Series por nodo
+        - triangulos : Series por nodo
+        - resumen : dict con n_nodos, n_aristas, densidad, clustering_medio,
+                    triangulos_total, triangulos_por_nodo_medio
+    """
+    if grafo.number_of_nodes() == 0:
+        vacio = pd.Series(dtype=float)
+        return {
+            "clustering": vacio,
+            "triangulos": vacio,
+            "resumen": {
+                "n_nodos": 0, "n_aristas": 0, "densidad": 0.0,
+                "clustering_medio": 0.0, "triangulos_total": 0,
+                "triangulos_por_nodo_medio": 0.0,
+            },
+        }
+
+    grafo_und = grafo.to_undirected()
+    clustering = pd.Series(nx.clustering(grafo_und), name="clustering")
+    triangulos = pd.Series(nx.triangles(grafo_und), name="triangulos")
+
+    resumen = {
+        "n_nodos": grafo.number_of_nodes(),
+        "n_aristas": grafo.number_of_edges(),
+        "densidad": nx.density(grafo),
+        "clustering_medio": float(clustering.mean()),
+        "triangulos_total": int(triangulos.sum() // 3),
+        "triangulos_por_nodo_medio": float(triangulos.mean()),
+    }
+    return {
+        "clustering": clustering,
+        "triangulos": triangulos,
+        "resumen": resumen,
+    }
+
+
+def modelo_nulo_permutacion(
+    viajes: pd.DataFrame,
+    categorias: list[str],
+    col_origen: str = "grid_origen",
+    col_destino: str = "grid_destino",
+    col_sexo: str = "Sexo",
+    col_peso: str = "Peso",
+    col_proposito: str | None = "PropositoAgregado",
+    n_permutaciones: int = 200,
+    total_minimo: float = 300.0,
+    min_viajes: float = 50.0,
+    umbral_pmi: float = 0.0,
+    suavizado: float = 0.5,
+    seed: int = 42,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """Modelo nulo por permutación: rompe la asociación sexo - movilidad.
+
+    En cada permutación, baraja la columna de sexo entre todos los viajes
+    (conserva origen, destino, propósito, peso), reconstruye la matriz O-D
+    por categoría sexo o sexo x propósito, calcula PMI y mide la topología
+    del subgrafo PMI > umbral para cada categoría.
+
+    Implementación vectorizada con `np.bincount`: codifica cada viaje como
+    un entero (od_code * n_categorias + cat_code) y reduce todo el groupby
+    a una sola operación por permutación.
+
+    Parámetros
+    ----------
+    viajes : DataFrame con una fila por viaje y columnas col_origen,
+        col_destino, col_sexo, col_peso, opcionalmente col_proposito.
+    categorias : list[str]
+        Lista de categorías a evaluar (e.g. ["Mujer_Cuidado", ...] si
+        col_proposito está presente, ["Mujer", "Hombre"] si no).
+    n_permutaciones : int
+        Número de permutaciones (default 200).
+    total_minimo : float
+        Filtro de total por par O-D (invariante bajo permutación de sexo).
+    min_viajes : float
+        Filtro de peso por categoría.
+    umbral_pmi : float
+        Umbral PMI para incluir aristas en el subgrafo.
+
+    Retorna
+    -------
+    DataFrame con n_permutaciones * len(categorias) filas. Columnas:
+    permutacion, categoria, sexo, proposito, viajes_total, n_nodos,
+    n_aristas, densidad, clustering_medio, triangulos_total,
+    triangulos_por_nodo_medio.
+    """
+    rng = np.random.default_rng(seed)
+    con_proposito = (col_proposito is not None
+                     and col_proposito in viajes.columns)
+
+    od_pares = list(zip(viajes[col_origen].values, viajes[col_destino].values))
+    od_codes, od_unique = pd.factorize(pd.Index(od_pares))
+    n_od = len(od_unique)
+
+    sexo_codes, sexo_unique = pd.factorize(viajes[col_sexo].values)
+    n_sexo = len(sexo_unique)
+
+    pesos = viajes[col_peso].to_numpy(dtype=float)
+
+    if con_proposito:
+        prop_codes, prop_unique = pd.factorize(viajes[col_proposito].values)
+        n_prop = len(prop_unique)
+        n_cat = n_sexo * n_prop
+        cat_a_idx = {}
+        for i_s, s in enumerate(sexo_unique):
+            for i_p, p in enumerate(prop_unique):
+                cat_a_idx[f"{s}_{p}"] = i_s * n_prop + i_p
+    else:
+        n_cat = n_sexo
+        cat_a_idx = {s: i for i, s in enumerate(sexo_unique)}
+
+    cat_idxs = np.array([cat_a_idx.get(c, -1) for c in categorias])
+
+    total_por_od = np.bincount(od_codes, weights=pesos, minlength=n_od)
+    mask_od = total_por_od > total_minimo
+    od_validas = np.where(mask_od)[0]
+    n_od_validas = len(od_validas)
+
+    remap = -np.ones(n_od, dtype=np.int64)
+    remap[od_validas] = np.arange(n_od_validas)
+    trip_mask = mask_od[od_codes]
+    od_codes_f = remap[od_codes[trip_mask]]
+    pesos_f = pesos[trip_mask]
+    sexo_codes_f = sexo_codes[trip_mask]
+    if con_proposito:
+        prop_codes_f = prop_codes[trip_mask]
+
+    pares_od_validos = [od_unique[i] for i in od_validas]
+    minlen = n_od_validas * n_cat
+
+    registros = []
+    for it in range(n_permutaciones):
+        sexo_perm = rng.permutation(sexo_codes_f)
+        if con_proposito:
+            cat_codes = sexo_perm * n_prop + prop_codes_f
+        else:
+            cat_codes = sexo_perm
+
+        bin_idx = od_codes_f * n_cat + cat_codes
+        M = np.bincount(bin_idx, weights=pesos_f, minlength=minlen)
+        M = M.reshape(n_od_validas, n_cat)
+
+        M_suav = M + suavizado
+        total_arista = M_suav.sum(axis=1)
+        total_categoria = M_suav.sum(axis=0)
+        total_global = M_suav.sum()
+        pmi_matrix = np.log2(
+            (M_suav / total_categoria[np.newaxis, :])
+            / (total_arista[:, np.newaxis] / total_global)
+        )
+
+        for cat, ci in zip(categorias, cat_idxs):
+            if ci < 0:
+                g = nx.DiGraph()
+            else:
+                mask_edge = (
+                    (pmi_matrix[:, ci] > umbral_pmi)
+                    & (M[:, ci] >= min_viajes)
+                )
+                edge_idx = np.where(mask_edge)[0]
+                g = nx.DiGraph()
+                g.add_weighted_edges_from(
+                    (pares_od_validos[j][0], pares_od_validos[j][1],
+                     float(M[j, ci]))
+                    for j in edge_idx
+                )
+
+            metricas = metricas_subgrafo(g)
+            r = metricas["resumen"].copy()
+            r["permutacion"] = it
+            r["categoria"] = cat
+            if "_" in cat:
+                sexo, proposito = cat.split("_", 1)
+            else:
+                sexo, proposito = cat, None
+            r["sexo"] = sexo
+            r["proposito"] = proposito
+            r["viajes_total"] = float(M[:, ci].sum()) if ci >= 0 else 0.0
+            registros.append(r)
+
+        if verbose and (it + 1) % 50 == 0:
+            print(f"  Permutacion {it + 1}/{n_permutaciones}")
+
+    return pd.DataFrame(registros)
+
+
+def matriz_od_a_aristas_geodataframe(
+    matriz_od: pd.DataFrame,
+    columna: str,
+    centroides: dict,
+    col_origen: str | None = None,
+    col_destino: str | None = None,
+    crs: str = "EPSG:4326",
+) -> gpd.GeoDataFrame:
+    """Convierte una columna de matriz O-D pivotada a aristas GeoDataFrame.
+
+    Para cada par (origen, destino) con el peso indicado por `columna`,
+    emite una LineString entre los centroides correspondientes.
+
+    Parámetros
+    ----------
+    matriz_od : DataFrame con MultiIndex (origen, destino) o columnas
+        explicitas `col_origen` y `col_destino`, y al menos la columna
+        `columna` con el peso.
+    columna : nombre de la columna a leer como peso de la arista.
+    centroides : dict de id_zona -> shapely.Point (en `crs`).
+    col_origen, col_destino : nombres de las columnas si no hay
+        MultiIndex (defecto: usa los nombres del index).
+    crs : CRS de los centroides.
+    """
+    if isinstance(matriz_od.index, pd.MultiIndex):
+        plano = matriz_od.reset_index()
+        col_o = col_origen or matriz_od.index.names[0]
+        col_d = col_destino or matriz_od.index.names[1]
+    else:
+        plano = matriz_od
+        col_o = col_origen
+        col_d = col_destino
+
+    geoms, pesos, origenes, destinos = [], [], [], []
+    for fila in plano.itertuples(index=False):
+        o = getattr(fila, col_o)
+        d = getattr(fila, col_d)
+        if o in centroides and d in centroides:
+            geoms.append(LineString([centroides[o], centroides[d]]))
+            pesos.append(float(getattr(fila, columna)))
+            origenes.append(o)
+            destinos.append(d)
+    return gpd.GeoDataFrame(
+        {"u": origenes, "v": destinos, "peso": pesos},
+        geometry=geoms, crs=crs,
+    )
+
+
+def aristas_pmi_a_geodataframe(
+    grafo: nx.DiGraph,
+    centroides: dict,
+    aristas_en_triangulo: set | None = None,
+    crs: str = "EPSG:4326",
+) -> gpd.GeoDataFrame:
+    """Convierte aristas de un subgrafo PMI a GeoDataFrame con metadata.
+
+    Cada arista del grafo se vuelca a una LineString entre los
+    centroides de origen y destino, conservando los atributos `pmi` y
+    `peso` y agregando `importancia = sqrt(max(pmi, 0) * peso)`. Si se
+    pasa `aristas_en_triangulo`, se agrega la columna booleana
+    `en_triangulo` para distinguir aristas en triangulo en visualizaciones.
+
+    Parámetros
+    ----------
+    grafo : nx.DiGraph con atributos `pmi` y `peso` en cada arista
+        (resultado de `subgrafo_pmi`).
+    centroides : dict de id_celda -> shapely.Point en `crs`.
+    aristas_en_triangulo : set opcional de tuplas (u, v) en triangulo
+        (resultado de `aristas_en_triangulos`).
+    crs : CRS de los centroides.
+    """
+    tri = aristas_en_triangulo if aristas_en_triangulo is not None else set()
+    geoms, pmis, pesos, en_tri = [], [], [], []
+    origenes, destinos = [], []
+    for u, v, datos in grafo.edges(data=True):
+        if u not in centroides or v not in centroides:
+            continue
+        geoms.append(LineString([centroides[u], centroides[v]]))
+        pmis.append(datos.get("pmi", 0))
+        pesos.append(datos.get("peso", 0))
+        en_tri.append((u, v) in tri)
+        origenes.append(u)
+        destinos.append(v)
+    gdf = gpd.GeoDataFrame(
+        {"u": origenes, "v": destinos, "pmi": pmis, "peso": pesos,
+         "en_triangulo": en_tri},
+        geometry=geoms, crs=crs,
+    )
+    gdf["importancia"] = np.sqrt(np.clip(gdf["pmi"], 0, None) * gdf["peso"])
+    return gdf
+
+
+def top_aristas(
+    gdf: gpd.GeoDataFrame,
+    top_pct: float,
+    columna: str = "importancia",
+) -> gpd.GeoDataFrame:
+    """Filtra el top `top_pct` (fraccion en [0, 1]) de aristas por una columna.
+
+    Default ordena por `importancia` (la columna que agrega
+    `aristas_pmi_a_geodataframe`). Sirve para reducir el clutter en
+    mapas de redes sin tocar el calculo de metricas topologicas.
+    """
+    if len(gdf) == 0 or top_pct >= 1.0:
+        return gdf
+    n_top = max(1, int(np.ceil(len(gdf) * top_pct)))
+    return gdf.nlargest(n_top, columna)
+
+
+def strength_por_nodo(grafo: nx.Graph, atributo_peso: str = "peso") -> dict:
+    """Suma de pesos de aristas incidentes por nodo (strength).
+
+    En grafos dirigidos cuenta aristas tanto de entrada como de salida.
+    Util como medida de actividad de un nodo en una red ponderada.
+    """
+    s = {}
+    for u, v, datos in grafo.edges(data=True):
+        w = datos.get(atributo_peso, 0)
+        s[u] = s.get(u, 0) + w
+        s[v] = s.get(v, 0) + w
+    return s
+
+
+# URL del basemap por defecto: Carto positron (sin token).
+BASEMAP_CARTO_POSITRON = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+
+
+def generar_html_flowmap(
+    locations: list[dict],
+    flows: list[dict],
+    colores: dict[str, str],
+    ruta_salida: str | Path,
+    title: str = "Flujos origen-destino",
+    panel_titulo: str = "Categorias",
+    descripcion_html: str = "",
+    centro: tuple[float, float] = (-70.65, -33.45),
+    zoom: float = 10.3,
+    pitch: float = 0.0,
+    basemap_url: str = BASEMAP_CARTO_POSITRON,
+) -> Path:
+    """Genera un HTML self-contained con flowmap.gl/layers.
+
+    Una `FlowmapLayer` por categoria, con panel de checkboxes para
+    toggle de visibilidad. Las dependencias se cargan desde esm.sh
+    (modulos ES via import map) y maplibre-gl desde unpkg (UMD). Sin
+    React, sin pydeck. El template HTML vive en
+    `gdsutils/templates/flowmap.html`.
+
+    Para visualizar el HTML hay que servirlo por HTTP (los modulos ES
+    no cargan desde `file://` por CORS):
+
+        uv run python -m http.server -d <directorio> 8000
+
+    Parámetros
+    ----------
+    locations : lista de dicts con keys `id`, `lon`, `lat`.
+    flows : lista de dicts con keys `origin`, `dest`, `count`,
+        `category` (y opcionales `pmi`, etc. accesibles via hover).
+    colores : dict de categoria -> color hex (por ejemplo "#641a80").
+        El orden define el orden del panel de toggles.
+    ruta_salida : path al archivo HTML a escribir.
+    title : titulo del documento (etiqueta `<title>`).
+    panel_titulo : titulo del panel de toggles.
+    descripcion_html : HTML opcional a mostrar debajo de los toggles
+        (envuelto en `<small>`). Vacio omite la seccion.
+    centro : (longitud, latitud) del centro inicial del mapa.
+    zoom, pitch : configuracion inicial de la camara.
+    basemap_url : URL al style.json del basemap (default Carto positron).
+    """
+    template = (_TEMPLATES_DIR / "flowmap.html").read_text(encoding="utf-8")
+
+    if descripcion_html:
+        descripcion_bloque = (
+            '<hr style="border: 0; border-top: 1px solid #eee; margin: 10px 0;"/>\n'
+            f"<small>{descripcion_html}</small>"
+        )
+    else:
+        descripcion_bloque = ""
+
+    html = (
+        template
+        .replace("__TITLE__", title)
+        .replace("__PANEL_TITULO__", panel_titulo)
+        .replace("__DESCRIPCION_HTML__", descripcion_bloque)
+        .replace("__BASEMAP_URL__", basemap_url)
+        .replace("__CENTER_LON__", str(centro[0]))
+        .replace("__CENTER_LAT__", str(centro[1]))
+        .replace("__ZOOM__", str(zoom))
+        .replace("__PITCH__", str(pitch))
+        .replace("__LOCATIONS__", json.dumps(locations))
+        .replace("__FLOWS__", json.dumps(flows))
+        .replace("__COLORES__", json.dumps(colores))
+    )
+
+    ruta = Path(ruta_salida)
+    ruta.write_text(html, encoding="utf-8")
+    return ruta

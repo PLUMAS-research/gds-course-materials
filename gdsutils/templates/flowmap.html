@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<title>__TITLE__</title>
+<link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet"/>
+<style>
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 12px; right: 12px; z-index: 10;
+    background: white; padding: 14px 16px; border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.15); max-width: 320px; font-size: 13px;
+  }
+  #panel h4 { margin: 0 0 10px 0; font-size: 14px; }
+  .toggle { display: flex; align-items: center; margin: 5px 0; }
+  .toggle input { margin: 0 8px 0 0; cursor: pointer; }
+  .swatch { display: inline-block; width: 14px; height: 14px;
+            border-radius: 2px; margin-right: 8px; flex-shrink: 0; }
+  .toggle label { cursor: pointer; user-select: none; flex: 1;
+                  display: flex; align-items: center; }
+  small { color: #555; line-height: 1.4; }
+  #loading { position: absolute; top: 12px; left: 12px; background: white;
+             padding: 8px 12px; border-radius: 4px; font-size: 12px;
+             box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="loading">Cargando flowmap.gl desde esm.sh ...</div>
+<div id="panel">
+  <h4>__PANEL_TITULO__</h4>
+  <div id="toggles"></div>
+  __DESCRIPCION_HTML__
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+
+<script type="importmap">
+{
+  "imports": {
+    "@deck.gl/core": "https://esm.sh/@deck.gl/core@9.0.38",
+    "@deck.gl/layers": "https://esm.sh/@deck.gl/layers@9.0.38",
+    "@deck.gl/aggregation-layers": "https://esm.sh/@deck.gl/aggregation-layers@9.0.38",
+    "@deck.gl/mapbox": "https://esm.sh/@deck.gl/mapbox@9.0.38",
+    "@flowmap.gl/data": "https://esm.sh/@flowmap.gl/data@9.3.0",
+    "@flowmap.gl/layers": "https://esm.sh/@flowmap.gl/layers@9.3.0"
+  }
+}
+</script>
+
+<script type="module">
+import {MapboxOverlay} from '@deck.gl/mapbox';
+import {FlowmapLayer} from '@flowmap.gl/layers';
+
+const LOCATIONS = __LOCATIONS__;
+const FLOWS = __FLOWS__;
+const COLORES = __COLORES__;
+const CATEGORIAS = Object.keys(COLORES);
+
+const visibilidad = Object.fromEntries(CATEGORIAS.map(c => [c, true]));
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: '__BASEMAP_URL__',
+  center: [__CENTER_LON__, __CENTER_LAT__],
+  zoom: __ZOOM__,
+  pitch: __PITCH__,
+  bearing: 0,
+});
+
+function buildLayers() {
+  return CATEGORIAS.filter(c => visibilidad[c]).map(cat => new FlowmapLayer({
+    id: 'flowmap-' + cat.replace(/[^A-Za-z0-9]/g, '_'),
+    data: {
+      locations: LOCATIONS,
+      flows: FLOWS.filter(f => f.category === cat),
+    },
+    pickable: true,
+    darkMode: false,
+    getLocationId: loc => loc.id,
+    getLocationName: loc => loc.id,
+    getLocationLat: loc => loc.lat,
+    getLocationLon: loc => loc.lon,
+    getFlowOriginId: flow => flow.origin,
+    getFlowDestId: flow => flow.dest,
+    getFlowMagnitude: flow => flow.count,
+    colorScheme: ['#e8e8e8', COLORES[cat]],
+    opacity: 0.7,
+  }));
+}
+
+const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
+
+map.on('load', () => {
+  map.addControl(overlay);
+  overlay.setProps({ layers: buildLayers() });
+  document.getElementById('loading').remove();
+});
+
+// Toggle UI
+const togglesDiv = document.getElementById('toggles');
+for (const cat of CATEGORIAS) {
+  const cbId = 'cb-' + cat.replace(/[^A-Za-z0-9]/g, '_');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'toggle';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.id = cbId;
+  cb.checked = true;
+  cb.addEventListener('change', () => {
+    visibilidad[cat] = cb.checked;
+    overlay.setProps({ layers: buildLayers() });
+  });
+  const label = document.createElement('label');
+  label.htmlFor = cbId;
+  label.innerHTML = `<span class="swatch" style="background:${COLORES[cat]}"></span>${cat}`;
+  wrapper.appendChild(cb);
+  wrapper.appendChild(label);
+  togglesDiv.appendChild(wrapper);
+}
+</script>
+</body>
+</html>
