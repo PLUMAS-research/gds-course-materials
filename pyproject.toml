@@ -28,6 +28,7 @@ dependencies = [
     "rioxarray>=0.19.0",
     "scikit-gstat>=1.0.23",
     "shap>=0.49.1",
+    "spopt>=0.7.0",
     "spreg>=1.9.0",
     "statsmodels>=0.14.6",
     "xgboost>=3.2.0",
