@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<title>__TITLE__</title>
+<link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet"/>
+<style>
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 12px; right: 12px; z-index: 10;
+    background: white; padding: 14px 16px; border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.15); width: 280px; font-size: 13px;
+  }
+  #panel h4 { margin: 0 0 10px 0; font-size: 14px; }
+  .grupo { display: flex; align-items: center; margin: 4px 0; }
+  .grupo input { margin: 0 8px 0 0; cursor: pointer; }
+  .grupo label { cursor: pointer; user-select: none; flex: 1;
+                 display: flex; align-items: center; }
+  .swatch { display: inline-block; width: 14px; height: 14px;
+            border-radius: 2px; margin-right: 8px; flex-shrink: 0; }
+  .slider { margin: 12px 0 4px 0; }
+  .slider .fila { display: flex; justify-content: space-between; align-items: baseline; }
+  .slider .val { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .slider input[type=range] { width: 100%; margin-top: 4px; cursor: pointer; }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee;
+           font-variant-numeric: tabular-nums; }
+  #stats b { font-size: 15px; }
+  hr.sep { border: 0; border-top: 1px solid #eee; margin: 12px 0; }
+  small { color: #555; line-height: 1.4; }
+  #tooltip {
+    position: absolute; z-index: 20; display: none; max-width: 280px;
+    background: white; padding: 10px 12px; border-radius: 6px; font-size: 12px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.2); pointer-events: auto;
+  }
+  #tooltip .cabecera { display: flex; align-items: center; font-weight: 600; margin-right: 16px; }
+  #tooltip .fecha { color: #777; margin: 2px 0 6px 0; }
+  #tooltip .texto { line-height: 1.4; }
+  #tooltip .reacciones { color: #777; margin-top: 6px; }
+  #tooltip .cerrar { position: absolute; top: 6px; right: 8px; cursor: pointer;
+                     color: #999; font-size: 15px; line-height: 1; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="tooltip"><span class="cerrar">&times;</span><div id="tt-cuerpo"></div></div>
+<div id="panel">
+  <h4>__PANEL_TITULO__</h4>
+  <div id="grupos"></div>
+  <div class="slider">
+    <div class="fila"><span>eps (radio de vecindad)</span><span class="val"><span id="eps-val"></span> m</span></div>
+    <input type="range" id="eps" min="50" max="800" step="25"/>
+  </div>
+  <div class="slider">
+    <div class="fila"><span>minPts (vecinos mínimos)</span><span class="val" id="minpts-val"></span></div>
+    <input type="range" id="minpts" min="5" max="60" step="1"/>
+  </div>
+  <div id="stats"></div>
+  __DESCRIPCION_HTML__
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<!-- deck.gl como bundle UMD (trae luma.gl empaquetado): expone el global `deck`
+     con todas las capas. Evita el drift de dependencias transitivas que aparece
+     al resolver @deck.gl/* y @luma.gl/core por separado desde un CDN de modulos. -->
+<script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
+
+<script>
+const {MapboxOverlay, ScatterplotLayer} = deck;
+
+// PUNTOS trae arrays paralelos: lon/lat (para dibujar), xi/yi (metros UTM con
+// offset, para DBSCAN) y grupo (indice). GRUPOS define nombre, color y los
+// parametros por defecto de cada grupo.
+const PUNTOS = __PUNTOS__;
+const GRUPOS = __GRUPOS__;
+const GRIS_RUIDO = [200, 200, 200];
+
+// Paleta categorica para los clusters (los hotspots). El ruido va en gris.
+const PALETA = [
+  [31,119,180],[255,127,14],[44,160,44],[214,39,40],[148,103,189],
+  [140,86,75],[227,119,194],[127,127,127],[188,189,34],[23,190,207],
+  [174,199,232],[255,187,120],[152,223,138],[255,152,150],[197,176,213],
+  [196,156,148],[247,182,210],[199,199,199],[219,219,141],[158,218,229],
+];
+
+// Indices de los puntos de cada grupo, precalculados una vez.
+const idxPorGrupo = GRUPOS.map(() => []);
+for (let p = 0; p < PUNTOS.grupo.length; p++) idxPorGrupo[PUNTOS.grupo[p]].push(p);
+
+let grupoActivo = 0;
+let labels = new Int32Array(0);   // etiqueta de cluster del subconjunto activo
+let sub = [];                     // indices globales del subconjunto activo
+
+// --- DBSCAN con indice de grilla (celda = eps) ---
+// labels: -2 sin visitar, -1 ruido, >=0 id de cluster. minPts cuenta el propio
+// punto, como en scikit-learn.
+function dbscan(xs, ys, eps, minPts) {
+  const n = xs.length;
+  const lab = new Int32Array(n).fill(-2);
+  const cell = eps;
+  const grid = new Map();
+  const ci = new Int32Array(n), cj = new Int32Array(n);
+  for (let p = 0; p < n; p++) {
+    const i = Math.floor(xs[p] / cell), j = Math.floor(ys[p] / cell);
+    ci[p] = i; cj[p] = j;
+    const k = i * 100000 + j;
+    let arr = grid.get(k);
+    if (!arr) { arr = []; grid.set(k, arr); }
+    arr.push(p);
+  }
+  const eps2 = eps * eps;
+  function vecinos(p) {
+    const res = [];
+    for (let di = -1; di <= 1; di++)
+      for (let dj = -1; dj <= 1; dj++) {
+        const arr = grid.get((ci[p] + di) * 100000 + (cj[p] + dj));
+        if (!arr) continue;
+        for (const q of arr) {
+          const dx = xs[p] - xs[q], dy = ys[p] - ys[q];
+          if (dx * dx + dy * dy <= eps2) res.push(q);
+        }
+      }
+    return res;
+  }
+  let c = -1;
+  for (let p = 0; p < n; p++) {
+    if (lab[p] !== -2) continue;
+    const nb = vecinos(p);
+    if (nb.length < minPts) { lab[p] = -1; continue; }
+    c++;
+    lab[p] = c;
+    const cola = nb.slice();
+    for (let s = 0; s < cola.length; s++) {
+      const q = cola[s];
+      if (lab[q] === -1) lab[q] = c;          // ruido de frontera pasa al cluster
+      if (lab[q] !== -2) continue;
+      lab[q] = c;
+      const nbq = vecinos(q);
+      if (nbq.length >= minPts) for (const r of nbq) cola.push(r);
+    }
+  }
+  return lab;
+}
+
+function recalcular() {
+  const eps = +document.getElementById('eps').value;
+  const minPts = +document.getElementById('minpts').value;
+  sub = idxPorGrupo[grupoActivo];
+  const xs = new Float64Array(sub.length), ys = new Float64Array(sub.length);
+  for (let i = 0; i < sub.length; i++) { xs[i] = PUNTOS.xi[sub[i]]; ys[i] = PUNTOS.yi[sub[i]]; }
+  labels = dbscan(xs, ys, eps, minPts);
+
+  let nClusters = 0, nRuido = 0;
+  for (const l of labels) { if (l === -1) nRuido++; else if (l + 1 > nClusters) nClusters = l + 1; }
+  const pctRuido = sub.length ? Math.round(100 * nRuido / sub.length) : 0;
+  document.getElementById('stats').innerHTML =
+    `<b>${nClusters}</b> hotspots &nbsp;·&nbsp; <b>${pctRuido}%</b> ruido` +
+    `<br><small>${sub.length.toLocaleString('es')} reportes de ${GRUPOS[grupoActivo].nombre}</small>`;
+
+  overlay.setProps({ layers: [capa()] });
+}
+
+function capa() {
+  return new ScatterplotLayer({
+    id: 'reportes',
+    data: { length: sub.length },
+    getPosition: (_, {index}) => [PUNTOS.lon[sub[index]], PUNTOS.lat[sub[index]]],
+    getFillColor: (_, {index}) => {
+      const l = labels[index];
+      return l === -1 ? GRIS_RUIDO : PALETA[l % PALETA.length];
+    },
+    getRadius: (_, {index}) => labels[index] === -1 ? 2 : 3.5,
+    radiusUnits: 'pixels',
+    radiusMinPixels: 2,
+    pickable: true,
+    onClick: (info) => { mostrarTooltip(info); tReporte = Date.now(); return true; },
+    opacity: 0.75,
+    stroked: false,
+    updateTriggers: { getFillColor: [grupoActivo, labels], getRadius: [grupoActivo, labels] },
+  });
+}
+
+// Tooltip al hacer clic en un reporte. El texto del reporte (categoria,
+// descripcion) viene de los datos y se inserta con textContent, no innerHTML,
+// para no interpretar como HTML lo que es contenido de usuario (evita inyeccion).
+const tooltip = document.getElementById('tooltip');
+const ttCuerpo = document.getElementById('tt-cuerpo');
+let tReporte = 0;
+
+function mostrarTooltip(info) {
+  if (info.index < 0) return;
+  const p = sub[info.index];
+  ttCuerpo.replaceChildren();
+
+  const cabecera = document.createElement('div');
+  cabecera.className = 'cabecera';
+  const punto = document.createElement('span');
+  punto.className = 'swatch';
+  punto.style.background = `rgb(${GRUPOS[grupoActivo].color.join(',')})`;
+  cabecera.appendChild(punto);
+  cabecera.appendChild(document.createTextNode(PUNTOS.cat[p]));
+
+  const fecha = document.createElement('div');
+  fecha.className = 'fecha';
+  fecha.textContent = PUNTOS.fecha[p];
+
+  const texto = document.createElement('div');
+  texto.className = 'texto';
+  texto.textContent = PUNTOS.desc[p];
+
+  const reacciones = document.createElement('div');
+  reacciones.className = 'reacciones';
+  reacciones.textContent = `${PUNTOS.likes[p]} me gusta · ${PUNTOS.comments[p]} comentarios`;
+
+  ttCuerpo.append(cabecera, fecha, texto, reacciones);
+
+  // Ubicar junto al clic, sin salirse del borde derecho/inferior.
+  const cont = document.getElementById('map').getBoundingClientRect();
+  let left = info.x + 14, top = info.y + 14;
+  tooltip.style.display = 'block';
+  if (left + tooltip.offsetWidth > cont.width) left = info.x - tooltip.offsetWidth - 14;
+  if (top + tooltip.offsetHeight > cont.height) top = info.y - tooltip.offsetHeight - 14;
+  tooltip.style.left = Math.max(0, left) + 'px';
+  tooltip.style.top = Math.max(0, top) + 'px';
+}
+
+function ocultarTooltip() { tooltip.style.display = 'none'; }
+tooltip.querySelector('.cerrar').addEventListener('click', ocultarTooltip);
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: '__BASEMAP_URL__',
+  center: [__CENTER_LON__, __CENTER_LAT__],
+  zoom: __ZOOM__,
+});
+const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
+
+// Selector de grupo: fija el grupo activo y sus parametros por defecto.
+const gruposDiv = document.getElementById('grupos');
+GRUPOS.forEach((g, k) => {
+  const id = 'g-' + k;
+  const wrap = document.createElement('div');
+  wrap.className = 'grupo';
+  const rb = document.createElement('input');
+  rb.type = 'radio'; rb.name = 'grupo'; rb.id = id; rb.checked = k === 0;
+  rb.addEventListener('change', () => {
+    grupoActivo = k;
+    document.getElementById('eps').value = g.eps;
+    document.getElementById('minpts').value = g.minPts;
+    sincronizarEtiquetas();
+    recalcular();
+  });
+  const lab = document.createElement('label');
+  lab.htmlFor = id;
+  const col = `rgb(${g.color.join(',')})`;
+  lab.innerHTML = `<span class="swatch" style="background:${col}"></span>${g.nombre}`;
+  wrap.appendChild(rb); wrap.appendChild(lab);
+  gruposDiv.appendChild(wrap);
+});
+
+function sincronizarEtiquetas() {
+  document.getElementById('eps-val').textContent = document.getElementById('eps').value;
+  document.getElementById('minpts-val').textContent = document.getElementById('minpts').value;
+}
+
+// Recalculo con throttle por animation frame: arrastrar el slider no encola
+// multiples corridas de DBSCAN.
+let pendiente = false;
+function programar() {
+  sincronizarEtiquetas();
+  if (pendiente) return;
+  pendiente = true;
+  requestAnimationFrame(() => { pendiente = false; recalcular(); });
+}
+document.getElementById('eps').addEventListener('input', programar);
+document.getElementById('minpts').addEventListener('input', programar);
+
+// Clic en el mapa vacio cierra el tooltip. El clic sobre un reporte tambien
+// dispara este evento, asi que se ignora con una ventana corta tras el onClick.
+map.on('click', () => { if (Date.now() - tReporte > 100) ocultarTooltip(); });
+
+map.on('load', () => {
+  map.addControl(overlay);
+  document.getElementById('eps').value = GRUPOS[0].eps;
+  document.getElementById('minpts').value = GRUPOS[0].minPts;
+  sincronizarEtiquetas();
+  recalcular();
+});
+</script>
+</body>
+</html>
