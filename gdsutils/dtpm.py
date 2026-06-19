@@ -101,6 +101,11 @@ _METRO_NEW = {
     "2",
     "4",
 }  # 2=METRO, 4=METROTREN (verificado por comparación de magnitudes)
+# Detección robusta del modo: algunos años traen los nombres de columna nuevos
+# (`tipo_transporte_1`) pero los valores como string ("METRO"), y otros como
+# código numérico ("2"). Por eso se chequea contra ambos en todos los años.
+_METRO_ALL = {"METRO", "METROTREN", "2", "4"}
+_BUS_ALL = {"BUS", "1"}
 
 # Normalización de nombres: esquemas antiguo e intermedio → esquema nuevo.
 # Se aplica en procesar_viajes antes de concatenar archivos con schemas distintos.
@@ -558,8 +563,8 @@ def consolidar_anio(anio):
     df = dd.read_parquet(ruta_in)
 
     nuevo = "tiempo_inicio_viaje" in df.columns
-    trans_cols = [c for c in (_TRANS_NEW if nuevo else _TRANS_OLD) if c in df.columns]
-    metro_vals = _METRO_NEW if nuevo else _METRO_OLD
+    # Toma las columnas de tipo de transporte estén con el nombre viejo o nuevo.
+    trans_cols = [c for c in (_TRANS_OLD + _TRANS_NEW) if c in df.columns]
 
     df = df.rename(columns=_mapa_columnas(df))
 
@@ -582,12 +587,17 @@ def consolidar_anio(anio):
     df = df[cols]
 
     if trans_cols:
-        metro_mask = df[trans_cols[0]].isin(metro_vals)
+        # Un viaje "contiene metro"/"contiene bus" si alguna de sus etapas lo usa.
+        metro_mask = df[trans_cols[0]].isin(_METRO_ALL)
+        bus_mask = df[trans_cols[0]].isin(_BUS_ALL)
         for col in trans_cols[1:]:
-            metro_mask = metro_mask | df[col].isin(metro_vals)
+            metro_mask = metro_mask | df[col].isin(_METRO_ALL)
+            bus_mask = bus_mask | df[col].isin(_BUS_ALL)
         df["contiene_metro"] = metro_mask
+        df["contiene_bus"] = bus_mask
     else:
         df["contiene_metro"] = False
+        df["contiene_bus"] = False
     df = df.drop(columns=trans_cols)
 
     df["factor"] = (
@@ -657,6 +667,7 @@ def consolidar_anio(anio):
         "factor",
         "proposito",
         "contiene_metro",
+        "contiene_bus",
         "paradero",
         "paradero_destino",
         "comuna",

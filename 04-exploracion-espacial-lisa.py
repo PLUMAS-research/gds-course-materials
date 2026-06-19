@@ -145,6 +145,7 @@ marimekko(
     xlabel_levels=True,
     legend_args="right",
     palette=[COLOR_HOMBRE, COLOR_MUJER],
+    width_transform=None,
     ax=ax,
 )
 ax.set_ylabel("Proporción")
@@ -195,6 +196,9 @@ sns.despine(ax=ax, left=True)
 fig.savefig(IMAGES / "04-no-uso-tp-sexo.png", dpi=192, bbox_inches="tight")
 plt.show()
 
+# %%
+viajes_personas["TipoDia"]
+
 
 # %%
 # ========================================
@@ -203,73 +207,370 @@ plt.show()
 # Cada panel muestra la distribución horaria de viajes por propósito,
 # separada por sexo. La comparación revela si hombres y mujeres viajan
 # a horas distintas o con propósitos distintos en cada franja del día.
+#
+# Para el perfil temporal usamos una agregación con más detalle que en
+# el resto del script: separamos Recreación como banda propia (es un
+# propósito con su propio patrón horario) y agrupamos los residuales
+# (Comer, Otra actividad) en Otros. Cuidado, Empleo/Estudio y Hogar
+# se mantienen igual.
 
+GRUPOS_STREAM = {
+    "De salud": "Cuidado",
+    "Visitar a alguien": "Cuidado",
+    "Buscar o Dejar a alguien": "Cuidado",
+    "Buscar o dejar algo": "Cuidado",
+    "De compras": "Cuidado",
+    "Trámites": "Cuidado",
+    "Al trabajo": "Empleo/Estudio",
+    "Por trabajo": "Empleo/Estudio",
+    "Al estudio": "Empleo/Estudio",
+    "Por estudio": "Empleo/Estudio",
+    "Recreación": "Recreación",
+    "Comer o Tomar algo": "Otros",
+    "Otra actividad (especifique)": "Otros",
+    "volver a casa": "Hogar",
+}
+PROPOSITOS_STREAM = ["Cuidado", "Empleo/Estudio", "Recreación", "Hogar", "Otros"]
+COLORES_STREAM = {
+    "Empleo/Estudio": "#2c105c",
+    "Hogar": "#781c6d",
+    "Cuidado": "#c83e73",
+    "Recreación": "#f8765c",
+    "Otros": "#feae76",
+}
+
+viajes_personas["PropositoStream"] = viajes_personas["Proposito"].map(GRUPOS_STREAM)
 viajes_personas["hora_inicio"] = (
     viajes_personas["HoraIni"].dt.total_seconds().div(3600).astype(int) % 24
 )
 
-viajes_con_hogar = viajes_personas[viajes_personas["PropositoAgregado"].notna()].copy()
+viajes_con_hogar = viajes_personas[viajes_personas["PropositoStream"].notna()].copy()
 
-print("Viajes por propósito (con hogar):")
-print(viajes_con_hogar["PropositoAgregado"].value_counts())
+print("Viajes por propósito (streamgraph, con hogar):")
+print(viajes_con_hogar["PropositoStream"].value_counts())
 
-hora_min = viajes_con_hogar["hora_inicio"].min()
-hora_max = viajes_con_hogar["hora_inicio"].max()
+# %%
+# Composición de propósitos por sexo (marimekko)
+# Ancho de cada columna: volumen relativo del propósito. Alto: proporción
+# por sexo dentro del propósito. Da el contexto agregado que el streamgraph
+# luego desagrega por hora.
+
+tabla_proposito = (
+    viajes_con_hogar.groupby(["PropositoStream", "Sexo"])["Peso"]
+    .sum()
+    .unstack(fill_value=0)
+    .reindex(PROPOSITOS_STREAM)
+)
+
+print("Distribución por propósito y sexo (viajes expandidos):")
+print(tabla_proposito)
+
+fig, ax = plt.subplots(figsize=(11, 4))
+marimekko(
+    tabla_proposito,
+    sort_items=True,
+    sort_categories=False,
+    annotate=True,
+    xlabel_levels=True,
+    legend_args="right",
+    palette=[COLOR_HOMBRE, COLOR_MUJER],
+    width_transform=None,
+    ax=ax,
+)
+ax.set_ylabel("Proporción")
+fig.suptitle("Propósito de viaje por sexo")
+sns.despine(ax=ax)
+fig.savefig(IMAGES / "04-proposito-por-sexo.png", dpi=192, bbox_inches="tight")
+plt.show()
+
+# %%
+# Perfil temporal: filas = tipo de día (Laboral vs Fin de semana),
+# columnas = sexo. El sábado y domingo se combinan en "Fin de semana"
+# porque comparten patrón general (sin peak laboral matutino) y juntos
+# tienen volumen suficiente para un perfil estable.
+
+MAPA_TIPO_DIA = {
+    "Laboral": "Laboral",
+    "Sábado": "Fin de semana",
+    "Domingo": "Fin de semana",
+}
+viajes_con_hogar["TipoDiaAgregado"] = viajes_con_hogar["TipoDia"].map(MAPA_TIPO_DIA)
+viajes_temporales = viajes_con_hogar[viajes_con_hogar["TipoDiaAgregado"].notna()].copy()
+
+TIPOS_DIA = ["Laboral", "Fin de semana"]
+SEXOS = ["Hombre", "Mujer"]
+
+hora_min = viajes_temporales["hora_inicio"].min()
+hora_max = viajes_temporales["hora_inicio"].max()
 rango_horas = range(hora_min, hora_max + 1)
 
 _fmt_miles = FuncFormatter(lambda x, _: f"{x / 1000:.0f}k" if x >= 1000 else f"{x:.0f}")
 
-# Máximo global para compartir escala entre paneles
-y_max_global = max(
-    viajes_con_hogar[viajes_con_hogar["Sexo"] == sexo]
-    .groupby("hora_inicio")["Peso"]
-    .sum()
-    .max()
-    for sexo in ["Hombre", "Mujer"]
+# Máximos por fila (cada tipo de día tiene su propia escala porque
+# el volumen del fin de semana es ~10 veces menor)
+y_max_por_dia = {}
+for tipo_dia in TIPOS_DIA:
+    y_max_por_dia[tipo_dia] = max(
+        viajes_temporales[
+            (viajes_temporales["Sexo"] == sexo)
+            & (viajes_temporales["TipoDiaAgregado"] == tipo_dia)
+        ]
+        .groupby("hora_inicio")["Peso"]
+        .sum()
+        .max()
+        for sexo in SEXOS
+    )
+
+fig, axes = plt.subplots(2, 2, figsize=(13, 9), sharex=True)
+
+for i, tipo_dia in enumerate(TIPOS_DIA):
+    for j, sexo in enumerate(SEXOS):
+        ax = axes[i, j]
+        sub = viajes_temporales[
+            (viajes_temporales["Sexo"] == sexo)
+            & (viajes_temporales["TipoDiaAgregado"] == tipo_dia)
+        ]
+        tabla_temporal = (
+            sub.groupby(["hora_inicio", "PropositoStream"])["Peso"]
+            .sum()
+            .unstack(fill_value=0)
+            .reindex(index=rango_horas, columns=PROPOSITOS_STREAM, fill_value=0)
+        )
+        streamgraph(
+            tabla_temporal,
+            baseline="zero",
+            colors=COLORES_STREAM,
+            labels=True,
+            label_args={"fontsize": 9},
+            avoid_label_collisions=True,
+            label_collision_args=dict(
+                iter_lim=200,
+                force_text=(0.8, 2.0),
+                expand_text=(1.3, 1.8),
+                arrowprops=dict(arrowstyle="-", color="#555555", lw=0.5),
+            ),
+            edgecolor="none",
+            linewidth=0.3,
+            skip_set_ylim=True,
+            ax=ax,
+            fig=fig,
+        )
+        ax.set_ylim(0, y_max_por_dia[tipo_dia] * 1.1)
+        n_total = int(sub["Peso"].sum())
+        if i == len(TIPOS_DIA) - 1:
+            ax.set_xlabel("Hora del día")
+        ax.yaxis.set_major_formatter(_fmt_miles)
+        ax.text(
+            0.02,
+            0.95,
+            f"{tipo_dia} . {sexo} (n={n_total:,})",
+            transform=ax.transAxes,
+            fontsize=10,
+            fontweight="bold",
+            va="top",
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.85),
+        )
+        sns.despine(ax=ax)
+
+for i in range(len(TIPOS_DIA)):
+    axes[i, 0].set_ylabel("Viajes expandidos")
+
+fig.suptitle("Perfil temporal de viajes por propósito, sexo y tipo de día")
+fig.savefig(IMAGES / "04-perfil-temporal.png", dpi=192, bbox_inches="tight")
+plt.show()
+
+
+# %%
+# Encadenamiento de viajes (trip-chaining): secuencias de propósitos.
+# La gente no hace viajes aislados sino cadenas: salir de casa, ir al
+# trabajo, pasar a buscar a alguien, volver a casa. Para cada persona
+# en día laboral construimos la secuencia ordenada de propósitos del
+# día y contamos su frecuencia. El gráfico tiene dos paneles:
+#
+#   - Izquierda: composición por sexo (barras apiladas normalizadas).
+#     Cada barra mide 100% y se reparte entre Hombre y Mujer.
+#   - Derecha: frecuencia total expandida de cada secuencia. Más ancho
+#     porque es la dimensión principal (cuántas personas).
+
+vp_laboral = viajes_personas[viajes_personas["TipoDia"] == "Laboral"].copy()
+
+ABREV_PROP = {
+    "Cuidado": "C",
+    "Empleo/Estudio": "E",
+    "Recreación": "R",
+    "Hogar": "H",
+    "Otros": "O",
+}
+
+
+def abreviar_secuencia(s):
+    return " > ".join(ABREV_PROP.get(p, p) for p in s.split(" > "))
+
+
+secuencias_df = (
+    vp_laboral.dropna(subset=["PropositoStream"])
+    .sort_values(["Persona", "HoraIni"])
+    .groupby("Persona")
+    .agg(
+        secuencia=("PropositoStream", lambda x: " > ".join(x)),
+        Sexo=("Sexo", "first"),
+        FactorPersona=("FactorPersona", "first"),
+    )
+    .reset_index()
 )
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+freq_abs = (
+    secuencias_df.groupby(["secuencia", "Sexo"])["FactorPersona"]
+    .sum()
+    .unstack(fill_value=0)
+)
+freq_abs["Total"] = freq_abs.sum(axis=1)
+top_abs = freq_abs.nlargest(12, "Total").copy()
+top_abs.index = [abreviar_secuencia(s) for s in top_abs.index]
+prop_within = top_abs[["Hombre", "Mujer"]].div(top_abs["Total"], axis=0)
 
-for ax, sexo in zip(axes, ["Hombre", "Mujer"]):
-    sub = viajes_con_hogar[viajes_con_hogar["Sexo"] == sexo]
-    tabla_temporal = (
-        sub.groupby(["hora_inicio", "PropositoAgregado"])["Peso"]
-        .sum()
-        .unstack(fill_value=0)
-        .reindex(
-            index=rango_horas, columns=list(COLORES_PROPOSITO.keys()), fill_value=0
-        )
-    )
-    streamgraph(
-        tabla_temporal,
-        baseline="zero",
-        colors=COLORES_PROPOSITO,
-        labels=True,
-        label_args={"fontsize": 9},
-        edgecolor="white",
-        linewidth=0.3,
-        skip_set_ylim=True,
-        ax=ax,
-    )
-    ax.set_ylim(0, y_max_global * 1.05)
-    n_total = int(sub["Peso"].sum())
-    ax.set_xlabel("Hora del día")
-    ax.yaxis.set_major_formatter(_fmt_miles)
-    ax.text(
-        0.02,
-        0.95,
-        f"{sexo} (n={n_total:,})",
-        transform=ax.transAxes,
-        fontsize=11,
-        fontweight="bold",
-        va="top",
-        bbox=dict(facecolor="white", edgecolor="none", alpha=0.8),
-    )
-    sns.despine(ax=ax)
+print(f"Top {len(top_abs)} secuencias (frecuencia absoluta y composición):")
+print(top_abs.round(0).astype(int))
+print(f"\nCobertura del top: {top_abs['Total'].sum() / freq_abs['Total'].sum():.1%}")
 
-axes[0].set_ylabel("Viajes expandidos")
-fig.suptitle("Perfil temporal de viajes por propósito y sexo")
-fig.savefig(IMAGES / "04-perfil-temporal.png", dpi=192, bbox_inches="tight")
+fig, (ax_prop, ax_total) = plt.subplots(
+    1,
+    2,
+    figsize=(12, 5),
+    gridspec_kw={"width_ratios": [1, 2.5], "wspace": 0.05},
+    sharey=True,
+)
+
+y_pos = np.arange(len(top_abs))
+
+# Panel izquierdo: composición por sexo (apilada normalizada).
+# Las etiquetas "Hombre"/"Mujer" se ponen sobre la primera fila usando
+# la propia barra como leyenda. Los porcentajes van dentro de cada
+# segmento, sin leyenda externa.
+ax_prop.barh(
+    y_pos,
+    prop_within["Hombre"],
+    color=COLOR_HOMBRE,
+    edgecolor="white",
+    linewidth=0.5,
+)
+ax_prop.barh(
+    y_pos,
+    prop_within["Mujer"],
+    left=prop_within["Hombre"],
+    color=COLOR_MUJER,
+    edgecolor="white",
+    linewidth=0.5,
+)
+
+for i in range(len(top_abs)):
+    h = prop_within["Hombre"].iloc[i]
+    m = prop_within["Mujer"].iloc[i]
+    ax_prop.text(
+        h / 2, i, f"{h:.0%}",
+        ha="center", va="center",
+        color="white", fontsize=9, fontweight="bold",
+    )
+    ax_prop.text(
+        h + m / 2, i, f"{m:.0%}",
+        ha="center", va="center",
+        color="white", fontsize=9, fontweight="bold",
+    )
+
+h0 = prop_within["Hombre"].iloc[0]
+m0 = prop_within["Mujer"].iloc[0]
+ax_prop.text(
+    h0 / 2, -0.65, "Hombre",
+    ha="center", va="bottom",
+    color=COLOR_HOMBRE, fontsize=10, fontweight="bold",
+)
+ax_prop.text(
+    h0 + m0 / 2, -0.65, "Mujer",
+    ha="center", va="bottom",
+    color=COLOR_MUJER, fontsize=10, fontweight="bold",
+)
+
+ax_prop.axvline(0.5, color="black", linewidth=0.5, linestyle=":", alpha=0.5)
+ax_prop.set_xlim(0, 1)
+ax_prop.set_ylim(len(top_abs) - 0.5, -1.3)
+ax_prop.set_xlabel("Composición por sexo")
+ax_prop.set_yticks(y_pos)
+ax_prop.set_yticklabels(top_abs.index, fontfamily="monospace", fontsize=9)
+sns.despine(ax=ax_prop)
+
+# Panel derecho: frecuencia total (sin categorías), más ancho
+ax_total.barh(
+    y_pos,
+    top_abs["Total"],
+    color="#666666",
+    edgecolor="white",
+    linewidth=0.5,
+)
+ax_total.set_xlabel("Personas con esa secuencia (expandido)")
+ax_total.xaxis.set_major_formatter(_fmt_miles)
+sns.despine(ax=ax_total)
+
+_abrev_str = ", ".join(f"{v}={k}" for k, v in ABREV_PROP.items())
+fig.suptitle(
+    f"Top 12 secuencias de viaje en día laboral ({_abrev_str})",
+    fontsize=11,
+)
+fig.savefig(IMAGES / "04-trip-chaining-secuencias.png", dpi=192, bbox_inches="tight")
+plt.show()
+
+
+# %%
+# Encadenamiento de viajes: duración de actividades entre viajes.
+# Tiempo entre HoraFin de un viaje y HoraIni del siguiente, para la
+# misma persona en día laboral. Distingue actividades cortas (almuerzo,
+# dejar a alguien, compras) de actividades largas (jornada laboral).
+# HoraFin viene en formato string "HH:MM"; se convierte a Timedelta para
+# poder restar HoraIni del viaje siguiente.
+
+vord = vp_laboral.sort_values(["Persona", "HoraIni"]).copy()
+vord["HoraFin_td"] = pd.to_timedelta(
+    vord["HoraFin"].astype(str) + ":00", errors="coerce"
+)
+vord["HoraIni_next"] = vord["HoraIni"].shift(-1)
+vord["Persona_next"] = vord["Persona"].shift(-1)
+mask_misma_persona = vord["Persona"] == vord["Persona_next"]
+vord["dur_actividad"] = (
+    vord["HoraIni_next"] - vord["HoraFin_td"]
+).dt.total_seconds() / 60
+duraciones = vord[
+    mask_misma_persona & vord["dur_actividad"].notna() & (vord["dur_actividad"] > 0)
+].copy()
+
+print("Duración de actividad entre viajes (minutos, no expandido):")
+print(duraciones.groupby("Sexo")["dur_actividad"].describe().round(1))
+
+fig, ax = plt.subplots(figsize=(8, 4))
+bins_dur_h = np.arange(0, 12 + 1 / 3, 1 / 3)
+centros_h = (bins_dur_h[:-1] + bins_dur_h[1:]) / 2
+for sexo, color in [("Hombre", COLOR_HOMBRE), ("Mujer", COLOR_MUJER)]:
+    sub = duraciones[duraciones["Sexo"] == sexo]
+    dur_h = sub["dur_actividad"].clip(upper=720) / 60
+    counts, _ = np.histogram(
+        dur_h, bins=bins_dur_h, weights=sub["FactorPersona"], density=True
+    )
+    ax.plot(
+        centros_h,
+        counts,
+        marker="o",
+        markersize=4,
+        linewidth=1.3,
+        color=color,
+        label=sexo,
+        alpha=0.9,
+    )
+ax.set_xlabel("Duración de actividad intermedia (horas)")
+ax.set_ylabel("Densidad")
+ax.set_xlim(0, 12)
+ax.set_xticks(range(0, 13, 2))
+ax.legend(frameon=False)
+ax.set_title("Tiempo entre viajes consecutivos en día laboral")
+sns.despine(ax=ax)
+fig.savefig(IMAGES / "04-trip-chaining-duracion.png", dpi=192, bbox_inches="tight")
 plt.show()
 
 
