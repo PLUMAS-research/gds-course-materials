@@ -103,11 +103,7 @@ ATRIBUTOS_CICLOVIAS_MINVU = [
 
 def extraer_minvu_a_rm(ruta_zip: Path) -> gpd.GeoDataFrame:
     """Lee el shapefile MINVU del zip, filtra a RM y existentes."""
-    if not ruta_zip.exists():
-        raise FileNotFoundError(
-            f"No existe {ruta_zip}. Bajar el shapefile desde "
-            "https://geoportal.cl/geoportal/catalog/36392/Ciclovias"
-        )
+    ruta_zip = config.requerir(ruta_zip, "shapefile MINVU", "GDS_MINVU_ZIP")
     uri = f"zip://{ruta_zip}!{SHP_MINVU_EN_ZIP}"
     print(f"Leyendo MINVU shapefile: {uri}")
     gdf = gpd.read_file(uri)
