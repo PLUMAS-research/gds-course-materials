@@ -13,7 +13,7 @@
 #     público (validaciones bip!), con hasta cuatro etapas. Un viaje "usa Metro"
 #     si alguna etapa es Metro, y "usa bus" si alguna etapa es bus. El Metro
 #     está SIEMPRE en la base (45-65% de los viajes lo usan).
-#   - **Los datos se preprocesan aparte** (`profe-scripts/13-bandera-dataset.py`):
+#   - **Los datos se preprocesan aparte** (`profe-scripts/13-lineas-metro-dataset.py`):
 #     se corrige el modo, se normaliza por fecha laboral y se deja una submuestra
 #     de viajes. Aquí hacemos los cálculos sobre esa submuestra.
 #   - **Antes y después.** Antes = 2016 (previo a L6 y L3). Después = 2019
@@ -26,7 +26,7 @@
 # %%
 from gdsutils.general import descargar_datos
 
-descargar_datos("https://dcc.uchile.cl/~egraells/gds-data/bandera.tgz")
+descargar_datos("https://dcc.uchile.cl/~egraells/gds-data/lineas-metro.tgz")
 
 # %%
 from pathlib import Path
@@ -59,7 +59,7 @@ plt.rcParams.update({
     "legend.fontsize": 11, "savefig.dpi": 300, "figure.dpi": 300,
 })
 
-DIR = Path("data") / "bandera"
+DIR = Path("data") / "lineas-metro"
 CRS_METRICO = "EPSG:32719"
 ANTES, DESPUES = 2016, 2019
 EVENTOS = {"Metro L6": 2017.84, "Metro L3": 2019.0}

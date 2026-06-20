@@ -5,3 +5,4 @@ imgui.ini
 .venv/
 data/
 __pycache__
+profe-scripts/config_local.py
