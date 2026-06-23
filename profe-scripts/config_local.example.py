@@ -30,5 +30,9 @@ from pathlib import Path
 # Shapefile de ciclovías MINVU (09-redes-santiago.py).
 # MINVU_ZIP = Path.home() / "Descargas" / "CICLOVchile_shp.zip"
 
+# Dataset global de check-ins de Foursquare, Yang et al. WWW'19
+# (14-foursquare-dataset.py). Carpeta con las subcarpetas CHECKINS/ y POIS/.
+# FOURSQUARE_DIR = Path.home() / "datos" / "4sq_2019"
+
 # Asignaciones censales precomputadas a importar (08-asignacion-rm.py).
 # LEGADO_ASIGNACION = Path.home() / "repositories" / "<repo-censo>" / "results"

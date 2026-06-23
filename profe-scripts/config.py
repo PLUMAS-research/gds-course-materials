@@ -58,6 +58,7 @@ SOSAFE_RAW = _conf("SOSAFE_RAW", "GDS_SOSAFE_RAW", ruta=True)
 SOSAFE_H3_GRID = _conf("SOSAFE_H3_GRID", "GDS_SOSAFE_H3_GRID", ruta=True)
 MINVU_ZIP = _conf("MINVU_ZIP", "GDS_MINVU_ZIP", ruta=True)
 LEGADO_ASIGNACION = _conf("LEGADO_ASIGNACION", "GDS_LEGADO_ASIGNACION", ruta=True)
+FOURSQUARE_DIR = _conf("FOURSQUARE_DIR", "GDS_FOURSQUARE_DIR", ruta=True)
 
 
 def requerir(ruta, descripcion, env_var):

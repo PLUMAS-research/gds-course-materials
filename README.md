@@ -24,6 +24,7 @@ La carpeta `gdsutils` contiene funciones utilitarias para trabajar con los datos
 * `11-clustering.py`: clustering espacial en tres problemas distintos. Detección de hotspots de puntos (k-means, DBSCAN, HDBSCAN) sobre reportes ciudadanos de SOSAFE; regionalización con restricción de contigüidad (SKATER y Ward) sobre hexágonos H3-8 con perfil censal; y el trade-off entre homogeneidad interna y fragmentación. Distancias en UTM 19S, caracterización de hotspots con alpha shapes y ritmos horario y semanal.
 * `12-demostraciones-interactivas.py`: cómo construir visualizaciones interactivas con ayuda de un LLM. No es una técnica de análisis: cubre cuándo conviene lo interactivo, el patrón de HTML autónomo (un template con los datos embebidos, sin build), dónde corre el cómputo, y cómo verificar el código generado. El ejemplo trabajado corre DBSCAN en vivo en el navegador sobre los reportes SOSAFE de la clase 11 y comprueba que coincide con scikit-learn.
 * `13-analisis-espacio-temporal.py`: análisis espacio-temporal usando la expansión del Metro de Santiago (Línea 6 en 2017, Línea 3 en 2019) como experimento natural. Compara pares origen-destino que ganaron acceso a Metro (tratamiento) con los que nunca lo tuvieron (control) sobre los viajes DTPM de 2016 y 2019. Incluye diferencias en diferencias para medir la sustitución de modo y un modelo de interacción espacial (gravedad) ajustado con regresión binomial negativa.
+* `14-etica-sesgos.py`: ética, sesgos y privacidad en datos de movilidad. Caso de unicidad de trayectorias (de Montjoye et al., 2013): qué fracción de personas queda identificada de forma única según cuántos puntos espacio-temporales se conozcan, con curvas sintéticas y reales, mapa de trayectorias únicas y el embudo de reidentificación. Contrasta la EOD 2012 (un día) con los check-ins de Foursquare (multi-día, 22 meses) para mostrar que seudonimizar no equivale a anonimizar bajo la Ley 21.719.
 
 ## Preparación de los datos
 
@@ -41,5 +42,6 @@ Dependencias de ejecución por script:
 * `09-redes-santiago.py`: calles y ciclovías de OpenStreetMap vía `quackosm` (descarga automática) y el shapefile nacional de ciclovías del MINVU (`GDS_MINVU_ZIP`).
 * `11-clustering-dataset.py`: los reportes SOSAFE crudos (`GDS_SOSAFE_RAW`).
 * `13-lineas-metro-dataset.py`: la base DTPM consolidada (se construye con `gdsutils.dtpm`) y el GTFS del Transantiago (URL en `gdsutils.dtpm`).
+* `14-foursquare-dataset.py`: el dataset global de check-ins de Foursquare (Yang et al., WWW'19) con sus carpetas `CHECKINS/` y `POIS/` (`GDS_FOURSQUARE_DIR`). Filtra a venues de Santiago y deja check-ins con hora local.
 
 La clase 12 no tiene profe-script: reutiliza el dataset preparado para la clase 11.

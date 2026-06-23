@@ -25,6 +25,7 @@ solo constantes en MAYÚSCULAS.
 | `SOSAFE_H3_GRID` | `GDS_SOSAFE_H3_GRID` | Parquet del grid H3-8 con perfil censal. | `05-sosafe-dataset.py` |
 | `MINVU_ZIP` | `GDS_MINVU_ZIP` | Zip del shapefile nacional de ciclovías del MINVU. | `09-redes-santiago.py` |
 | `LEGADO_ASIGNACION` | `GDS_LEGADO_ASIGNACION` | Carpeta con asignaciones censales precomputadas a reusar (opcional; si falta, se regeneran). | `08-asignacion-rm.py` |
+| `FOURSQUARE_DIR` | `GDS_FOURSQUARE_DIR` | Carpeta del dataset global de check-ins de Foursquare (Yang et al., WWW'19), con subcarpetas `CHECKINS/` y `POIS/`. | `14-foursquare-dataset.py` |
 
 ## Subida al servidor
 
